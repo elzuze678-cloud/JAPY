@@ -11,6 +11,11 @@ class ReminderModule(Module):
         self.events = events
 
 
+    def update(self):
+
+        self.check()
+
+
     def check(self):
 
         print("Revisando eventos...")
