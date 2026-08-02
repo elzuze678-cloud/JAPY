@@ -1,0 +1,1 @@
+JAPY pueda mandar mensajes y entender si un evento se cancela o no
