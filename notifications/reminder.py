@@ -1,9 +1,13 @@
 from datetime import datetime
+from core.module import Module
 
 
-class ReminderModule:
+class ReminderModule(Module):
 
     def __init__(self, events):
+
+        super().__init__("Recordatorios")
+
         self.events = events
 
 
