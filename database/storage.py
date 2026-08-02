@@ -9,6 +9,7 @@ class Storage:
     def __init__(self, filename="database/events.json"):
         self.filename = filename
 
+
     def save_events(self, events):
 
         data = []
@@ -17,13 +18,20 @@ class Storage:
             data.append({
                 "title": event.title,
                 "date": event.date,
-                "time": event.time
+                "time": event.time,
+                "status": event.status
             })
 
         with open(self.filename, "w", encoding="utf-8") as file:
-            json.dump(data, file, indent=4, ensure_ascii=False)
+            json.dump(
+                data,
+                file,
+                indent=4,
+                ensure_ascii=False
+            )
 
         print("Eventos guardados.")
+
 
     def load_events(self):
 
@@ -36,10 +44,16 @@ class Storage:
         events = []
 
         for item in data:
+
             event = Event(
                 item["title"],
                 item["date"],
                 item["time"]
+            )
+
+            event.status = item.get(
+                "status",
+                "Activo"
             )
 
             events.append(event)

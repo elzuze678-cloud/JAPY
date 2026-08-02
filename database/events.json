@@ -2,6 +2,13 @@
     {
         "title": "Estudiar programación",
         "date": "05/08/2026",
-        "time": "20:00"
+        "time": "20:00",
+        "status": "Completado"
+    },
+    {
+        "title": "Reunión proyecto",
+        "date": "07/08/2026",
+        "time": "18:00",
+        "status": "Cancelado"
     }
 ]

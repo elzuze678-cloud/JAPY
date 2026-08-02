@@ -12,6 +12,7 @@ class CalendarModule(Module):
 
         self.events = self.storage.load_events()
 
+
     def create_event(self, title, date, time):
 
         event = Event(title, date, time)
@@ -21,6 +22,7 @@ class CalendarModule(Module):
         self.storage.save_events(self.events)
 
         print(f"Evento '{event.title}' agregado.")
+
 
     def list_events(self):
 
@@ -33,6 +35,7 @@ class CalendarModule(Module):
         for event in self.events:
             print(event)
 
+
     def find_event(self, title):
 
         for event in self.events:
@@ -41,3 +44,35 @@ class CalendarModule(Module):
                 return event
 
         return None
+
+
+    def cancel_event(self, title):
+
+        event = self.find_event(title)
+
+        if event:
+
+            event.cancel()
+
+            self.storage.save_events(self.events)
+
+            print(f"Evento '{title}' cancelado.")
+
+        else:
+            print("Evento no encontrado.")
+
+
+    def complete_event(self, title):
+
+        event = self.find_event(title)
+
+        if event:
+
+            event.complete()
+
+            self.storage.save_events(self.events)
+
+            print(f"Evento '{title}' completado.")
+
+        else:
+            print("Evento no encontrado.")
