@@ -4,5 +4,9 @@
         "message": "JAPY recuerda este aviso",
         "priority": "normal",
         "date": "03/08/2026 22:25"
+    },
+    {
+        "event": "Prueba notificación JAPY",
+        "time": "03/08/2026 21:33"
     }
 ]

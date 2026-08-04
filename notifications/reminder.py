@@ -2,6 +2,7 @@ from datetime import datetime
 
 from core.module import Module
 from notifications.manager import NotificationManager
+from database.notification_storage import NotificationStorage
 
 
 
@@ -16,7 +17,11 @@ class ReminderModule(Module):
 
         self.notifier = NotificationManager()
 
-        self.sent_reminders = []
+        self.storage = NotificationStorage()
+
+        self.sent_reminders = (
+            self.storage.load_notifications()
+        )
 
 
 
@@ -35,6 +40,7 @@ class ReminderModule(Module):
         found = False
 
 
+
         for event in self.events:
 
 
@@ -47,13 +53,20 @@ class ReminderModule(Module):
             for reminder_time in event.get_reminder_times():
 
 
-                reminder_id = (
-                    event.title,
-                    reminder_time
-                )
+                reminder_id = {
+
+                    "event": event.title,
+
+                    "time": (
+                        reminder_time
+                        .strftime("%d/%m/%Y %H:%M")
+                    )
+
+                }
 
 
-                if reminder_id in self.sent_reminders:
+
+                if self.already_sent(reminder_id):
 
                     continue
 
@@ -63,17 +76,25 @@ class ReminderModule(Module):
 
 
                     self.notifier.send(
+
                         "Recordatorio",
+
                         (
                             f"{event.title} "
                             f"comienza a las "
                             f"{event.time}"
                         )
+
                     )
 
 
                     self.sent_reminders.append(
                         reminder_id
+                    )
+
+
+                    self.storage.save_notifications(
+                        self.sent_reminders
                     )
 
 
@@ -86,6 +107,33 @@ class ReminderModule(Module):
             print(
                 "No hay recordatorios pendientes."
             )
+
+
+
+    def already_sent(self, reminder_id):
+
+
+        for reminder in self.sent_reminders:
+
+
+            if (
+
+                reminder.get("event")
+                == reminder_id["event"]
+
+                and
+
+                reminder.get("time")
+                == reminder_id["time"]
+
+            ):
+
+                return True
+
+
+
+        return False
+
 
 
 
@@ -117,6 +165,7 @@ class ReminderModule(Module):
         if next_times:
 
             return min(next_times)
+
 
 
         return None
