@@ -1,8 +1,12 @@
 from datetime import datetime
+
 from core.module import Module
+from notifications.manager import NotificationManager
+
 
 
 class ReminderModule(Module):
+
 
     def __init__(self, events):
 
@@ -10,10 +14,16 @@ class ReminderModule(Module):
 
         self.events = events
 
+        self.notifier = NotificationManager()
+
+        self.sent_reminders = []
+
+
 
     def update(self):
 
         self.check()
+
 
 
     def check(self):
@@ -24,46 +34,89 @@ class ReminderModule(Module):
 
         found = False
 
+
         for event in self.events:
 
+
             if event.status != "Activo":
+
                 continue
 
-            if event.datetime > now:
 
-                print(
-                    f"Recordatorio: {event.title} "
-                    f"el {event.date} a las {event.time}"
+
+            for reminder_time in event.get_reminder_times():
+
+
+                reminder_id = (
+                    event.title,
+                    reminder_time
                 )
 
-                found = True
+
+                if reminder_id in self.sent_reminders:
+
+                    continue
+
+
+
+                if reminder_time <= now:
+
+
+                    self.notifier.send(
+                        "Recordatorio",
+                        (
+                            f"{event.title} "
+                            f"comienza a las "
+                            f"{event.time}"
+                        )
+                    )
+
+
+                    self.sent_reminders.append(
+                        reminder_id
+                    )
+
+
+                    found = True
+
 
 
         if not found:
 
-            print("No hay recordatorios pendientes.")
+            print(
+                "No hay recordatorios pendientes."
+            )
+
 
 
     def next_run(self):
 
-        """
-        Devuelve cuándo necesita revisarse nuevamente.
-        """
+        next_times = []
 
-        future_events = []
 
         for event in self.events:
 
-            if event.status == "Activo":
 
-                if event.datetime > datetime.now():
+            if event.status != "Activo":
 
-                    future_events.append(event.datetime)
+                continue
 
 
-        if future_events:
 
-            return min(future_events)
+            for reminder_time in event.get_reminder_times():
+
+
+                if reminder_time > datetime.now():
+
+                    next_times.append(
+                        reminder_time
+                    )
+
+
+
+        if next_times:
+
+            return min(next_times)
 
 
         return None
