@@ -1,4 +1,4 @@
-from core.state import JapyState
+from voice.responses import JapyResponses
 
 
 
@@ -9,11 +9,12 @@ class SystemStatusAction:
 
         self.engine = engine
 
+        self.responses = JapyResponses()
 
 
-    def execute(self):
 
-        return (
-            f"Estado actual: "
-            f"{self.engine.state}"
+    def execute(self, data=None):
+
+        return self.responses.state(
+            self.engine.state
         )

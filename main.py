@@ -1,12 +1,22 @@
-from app.bootstrap import create_japy
+from core.engine import JapyEngine
+from core.runtime.runtime import JapyRuntime
+
 
 
 def main():
 
-    japy = create_japy()
+    japy = JapyEngine()
 
-    japy.start()
+
+    runtime = JapyRuntime(
+        japy
+    )
+
+
+    runtime.run()
+
 
 
 if __name__ == "__main__":
+
     main()

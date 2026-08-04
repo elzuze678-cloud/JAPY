@@ -32,3 +32,15 @@ CREATE_EVENT = [
     "nuevo evento"
 
 ]
+
+
+GREETINGS = [
+
+    "hola",
+    "buenas",
+    "buenos días",
+    "buenos dias",
+    "buenas tardes",
+    "buenas noches"
+
+]

@@ -1,5 +1,6 @@
 from voice.listener import Listener
-from voice.commands import CommandProcessor
+
+from core.interpreter.interpreter import Interpreter
 
 
 
@@ -12,9 +13,7 @@ class VoiceEngine:
 
         self.listener = Listener()
 
-        self.commands = CommandProcessor(
-            japy
-        )
+        self.interpreter = Interpreter()
 
         self.running = False
 
@@ -37,8 +36,19 @@ class VoiceEngine:
         text = self.listener.listen()
 
 
-        response = self.commands.process(
+        if not text:
+
+            return
+
+
+
+        intent = self.interpreter.process(
             text
+        )
+
+
+        response = self.japy.execute(
+            intent
         )
 
 
@@ -55,7 +65,9 @@ class VoiceEngine:
 
         self.running = False
 
+
         self.listener.stop()
+
 
         print(
             "🎙️ Motor de voz detenido."

@@ -3,7 +3,8 @@ from core.interpreter.intent import Intent
 from core.interpreter.rules import (
     SHOW_EVENTS,
     SHOW_STATUS,
-    CREATE_EVENT
+    CREATE_EVENT,
+    GREETINGS
 )
 
 from core.interpreter.extractor import EventExtractor
@@ -30,7 +31,8 @@ class Interpreter:
 
 
 
-        # Primero crear eventos
+        # Crear eventos
+
         for word in CREATE_EVENT:
 
             if word in command:
@@ -47,7 +49,8 @@ class Interpreter:
 
 
 
-        # Después consultar eventos
+        # Mostrar eventos
+
         for word in SHOW_EVENTS:
 
             if word in command:
@@ -59,12 +62,25 @@ class Interpreter:
 
 
         # Estado
+
         for word in SHOW_STATUS:
 
             if word in command:
 
                 return Intent(
                     "estado"
+                )
+
+
+
+        # Saludos
+
+        for word in GREETINGS:
+
+            if word in command:
+
+                return Intent(
+                    "saludo"
                 )
 
 
