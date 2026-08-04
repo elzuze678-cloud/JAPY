@@ -1,8 +1,16 @@
 import re
 
+from core.interpreter.date_parser import DateParser
+
 
 
 class EventExtractor:
+
+
+    def __init__(self):
+
+        self.date_parser = DateParser()
+
 
 
     def extract(self, text):
@@ -10,40 +18,68 @@ class EventExtractor:
         data = {}
 
 
-        hora = re.search(
-            r"\b\d{1,2}:\d{2}\b",
+        # Obtener fecha y hora usando lenguaje natural
+
+        date_data = self.date_parser.parse(
             text
         )
 
 
-        if hora:
-
-            data["hora"] = hora.group()
-
-
-
-        fecha = re.search(
-            r"\b\d{2}/\d{2}/\d{4}\b",
-            text
+        data.update(
+            date_data
         )
 
 
-        if fecha:
 
-            data["fecha"] = fecha.group()
+        # Buscar fecha escrita manualmente
+        if "fecha" not in data:
+
+            fecha = re.search(
+                r"\b\d{2}/\d{2}/\d{4}\b",
+                text
+            )
+
+
+            if fecha:
+
+                data["fecha"] = fecha.group()
 
 
 
-        titulo = text
+        # Buscar hora escrita manualmente
+        if "hora" not in data:
+
+            hora = re.search(
+                r"\b\d{1,2}:\d{2}\b",
+                text
+            )
+
+
+            if hora:
+
+                data["hora"] = hora.group()
+
+
+
+        # Crear título limpio
+
+        titulo = text.lower()
+
 
 
         palabras = [
+
             "japy",
             "crea",
             "crear",
             "evento",
-            "nuevo"
+            "nuevo",
+            "mañana",
+            "hoy",
+            "a las"
+
         ]
+
 
 
         for palabra in palabras:
@@ -54,7 +90,37 @@ class EventExtractor:
             )
 
 
+
+        # Quitar fechas del título
+
+        titulo = re.sub(
+            r"\b\d{2}/\d{2}/\d{4}\b",
+            "",
+            titulo
+        )
+
+
+
+        # Quitar horas del título
+
+        titulo = re.sub(
+            r"\b\d{1,2}:\d{2}\b",
+            "",
+            titulo
+        )
+
+
+
+        # Limpiar espacios
+
+        titulo = " ".join(
+            titulo.split()
+        )
+
+
+
         data["titulo"] = titulo.strip()
+
 
 
         return data
