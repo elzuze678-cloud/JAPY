@@ -1,6 +1,7 @@
 from voice.responses import JapyResponses
 
 from core.actions.show_events import ShowEventsAction
+from core.actions.create_event import CreateEventAction
 from core.actions.system_status import SystemStatusAction
 
 
@@ -17,11 +18,21 @@ class CommandProcessor:
 
         self.actions = {
 
+
             "mostrar_eventos":
+
                 ShowEventsAction(engine),
 
 
+
+            "crear_evento":
+
+                CreateEventAction(engine),
+
+
+
             "estado":
+
                 SystemStatusAction(engine)
 
         }
@@ -37,16 +48,16 @@ class CommandProcessor:
 
 
 
-        action = intent.action
+        action = self.actions.get(
+            intent.action
+        )
 
 
+        if action:
 
-        if action in self.actions:
-
-
-            return self.actions[
-                action
-            ].execute()
+            return action.execute(
+                intent.data
+            )
 
 
 

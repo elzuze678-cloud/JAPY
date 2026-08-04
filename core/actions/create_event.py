@@ -1,3 +1,6 @@
+from voice.responses import JapyResponses
+
+
 class CreateEventAction:
 
 
@@ -5,9 +8,32 @@ class CreateEventAction:
 
         self.engine = engine
 
+        self.responses = JapyResponses()
 
 
-    def execute(self, title, date, time, reminders=None):
+
+    def execute(self, data):
+
+        title = data.get(
+            "titulo"
+        )
+
+        date = data.get(
+            "fecha"
+        )
+
+        time = data.get(
+            "hora"
+        )
+
+
+        if not title or not date or not time:
+
+            return (
+                "No pude obtener "
+                "todos los datos del evento."
+            )
+
 
         for module in self.engine.manager.modules:
 
@@ -17,7 +43,7 @@ class CreateEventAction:
                     title,
                     date,
                     time,
-                    reminders
+                    [30]
                 )
 
 
@@ -27,8 +53,7 @@ class CreateEventAction:
                 )
 
 
-
         return (
-            "No encuentro el módulo de agenda."
+            "No encontré el módulo "
+            "de agenda."
         )
-    

@@ -1,8 +1,22 @@
 from core.interpreter.intent import Intent
 
+from core.interpreter.rules import (
+    SHOW_EVENTS,
+    SHOW_STATUS,
+    CREATE_EVENT
+)
+
+from core.interpreter.extractor import EventExtractor
+
 
 
 class Interpreter:
+
+
+    def __init__(self):
+
+        self.extractor = EventExtractor()
+
 
 
     def process(self, text):
@@ -16,27 +30,42 @@ class Interpreter:
 
 
 
-        if "evento" in command:
+        # Primero crear eventos
+        for word in CREATE_EVENT:
 
-            return Intent(
-                "mostrar_eventos"
-            )
+            if word in command:
 
-
-
-        if "estado" in command:
-
-            return Intent(
-                "estado"
-            )
+                data = self.extractor.extract(
+                    text
+                )
 
 
+                return Intent(
+                    "crear_evento",
+                    data
+                )
 
-        if "hola" in command:
 
-            return Intent(
-                "saludo"
-            )
+
+        # Después consultar eventos
+        for word in SHOW_EVENTS:
+
+            if word in command:
+
+                return Intent(
+                    "mostrar_eventos"
+                )
+
+
+
+        # Estado
+        for word in SHOW_STATUS:
+
+            if word in command:
+
+                return Intent(
+                    "estado"
+                )
 
 
 
