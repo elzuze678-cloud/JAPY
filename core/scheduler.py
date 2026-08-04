@@ -18,12 +18,15 @@ class Scheduler:
 
                 continue
 
+
             module.update()
+
 
 
     def get_next_run(self):
 
         next_times = []
+
 
         for module in self.manager.modules:
 
@@ -37,7 +40,9 @@ class Scheduler:
 
             if next_time:
 
-                next_times.append(next_time)
+                next_times.append(
+                    next_time
+                )
 
 
         if next_times:
@@ -46,3 +51,29 @@ class Scheduler:
 
 
         return None
+
+
+
+    def get_next_event(self):
+
+        next_event = None
+
+
+        for module in self.manager.modules:
+
+            if hasattr(module, "get_next_reminder"):
+
+                reminder = module.get_next_reminder()
+
+
+                if reminder:
+
+                    if (
+                        next_event is None
+                        or reminder < next_event
+                    ):
+
+                        next_event = reminder
+
+
+        return next_event

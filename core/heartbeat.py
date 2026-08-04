@@ -20,7 +20,15 @@ class Heartbeat:
 
             self.tick()
 
-            time.sleep(1)
+            sleep_time = (
+                self.engine.sleep_manager.get_sleep_time()
+            )
+
+            print(
+                f"Heartbeat descansando {sleep_time} segundos."
+            )
+
+            time.sleep(sleep_time)
 
 
     def tick(self):

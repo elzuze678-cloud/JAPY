@@ -1,11 +1,15 @@
+from datetime import datetime
+
 from core.module import Module
 from database.storage import Storage
 from scheduler.event import Event
 
 
+
 class CalendarModule(Module):
 
     def __init__(self):
+
         super().__init__("Agenda")
 
         self.storage = Storage()
@@ -13,27 +17,91 @@ class CalendarModule(Module):
         self.events = self.storage.load_events()
 
 
-    def create_event(self, title, date, time):
 
-        event = Event(title, date, time)
+    def create_event(
+        self,
+        title,
+        date,
+        time,
+        reminders=None
+    ):
+
+        event = Event(
+            title,
+            date,
+            time,
+            reminders
+        )
+
 
         self.events.append(event)
 
-        self.storage.save_events(self.events)
 
-        print(f"Evento '{event.title}' agregado.")
+        self.storage.save_events(
+            self.events
+        )
+
+
+        print(
+            f"Evento '{event.title}' agregado."
+        )
+
+
+
+    def get_next_reminder(self):
+
+        reminders = []
+
+
+        for event in self.events:
+
+
+            if event.status != "Activo":
+
+                continue
+
+
+
+            for reminder_time in event.get_reminder_times():
+
+
+                if reminder_time > datetime.now():
+
+                    reminders.append(
+                        reminder_time
+                    )
+
+
+
+        if reminders:
+
+            return min(reminders)
+
+
+        return None
+
 
 
     def list_events(self):
 
         if not self.events:
-            print("No hay eventos registrados.")
+
+            print(
+                "No hay eventos registrados."
+            )
+
             return
 
-        print("Eventos registrados:")
+
+        print(
+            "Eventos registrados:"
+        )
+
 
         for event in self.events:
+
             print(event)
+
 
 
     def find_event(self, title):
@@ -41,38 +109,64 @@ class CalendarModule(Module):
         for event in self.events:
 
             if event.title.lower() == title.lower():
+
                 return event
 
+
         return None
+
 
 
     def cancel_event(self, title):
 
         event = self.find_event(title)
 
+
         if event:
 
             event.cancel()
 
-            self.storage.save_events(self.events)
 
-            print(f"Evento '{title}' cancelado.")
+            self.storage.save_events(
+                self.events
+            )
+
+
+            print(
+                f"Evento '{title}' cancelado."
+            )
+
 
         else:
-            print("Evento no encontrado.")
+
+            print(
+                "Evento no encontrado."
+            )
+
 
 
     def complete_event(self, title):
 
         event = self.find_event(title)
 
+
         if event:
 
             event.complete()
 
-            self.storage.save_events(self.events)
 
-            print(f"Evento '{title}' completado.")
+            self.storage.save_events(
+                self.events
+            )
+
+
+            print(
+                f"Evento '{title}' completado."
+            )
+
 
         else:
-            print("Evento no encontrado.")
+
+            print(
+                "Evento no encontrado."
+            )

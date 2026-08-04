@@ -2,6 +2,7 @@ from core.manager import ModuleManager
 from core.scheduler import Scheduler
 from core.state import StateManager, JapyState
 from core.heartbeat import Heartbeat
+from core.sleep import SleepManager
 
 
 class JapyEngine:
@@ -14,6 +15,10 @@ class JapyEngine:
 
         self.scheduler = Scheduler(
             self.manager
+        )
+
+        self.sleep_manager = SleepManager(
+            self
         )
 
         self.heartbeat = Heartbeat(

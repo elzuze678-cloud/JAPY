@@ -10,5 +10,17 @@
         "date": "07/08/2026",
         "time": "18:00",
         "status": "Cancelado"
+    },
+    {
+        "title": "Prueba JAPY",
+        "date": "10/08/2026",
+        "time": "10:00",
+        "status": "Activo"
+    },
+    {
+        "title": "Prueba descanso JAPY",
+        "date": "10/08/2026",
+        "time": "10:00",
+        "status": "Activo"
     }
 ]
