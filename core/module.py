@@ -1,4 +1,4 @@
-# Este es el primer archivo del cerebro de "JAPY"
+from datetime import datetime
 
 
 class Module:
@@ -8,33 +8,37 @@ class Module:
         self.name = name
         self.enabled = True
 
-        # Tiempo entre actualizaciones (en segundos)
-        # None = este módulo no usa temporizador
-        self.interval = None
-
-        # Momento de la última actualización
-        self.last_update = None
-
     def start(self):
-        self.enabled = True
+
         print(f"{self.name} iniciado")
+
+    def stop(self):
+
+        print(f"{self.name} detenido")
 
     def update(self):
         """
-        Método que será sobrescrito por los módulos
-        que necesiten actualizarse.
+        Método que será sobrescrito por cada módulo.
         """
         pass
 
-    def stop(self):
-        self.enabled = False
-        print(f"{self.name} detenido")
+    def should_run(self):
+        """
+        Indica si el Scheduler debe ejecutar este módulo.
+        """
+        return self.enabled
+
+    def next_run(self):
+        """
+        Devuelve la próxima fecha y hora en la que este
+        módulo necesita ejecutarse.
+
+        Cada módulo podrá sobrescribir este método.
+        """
+        return datetime.now()
 
     def __str__(self):
 
-        if self.enabled:
-            status = "Activo"
-        else:
-            status = "Detenido"
+        estado = "Activo" if self.enabled else "Inactivo"
 
-        return f"Module: {self.name} | Estado: {status}"
+        return f"Module: {self.name} | Estado: {estado}"

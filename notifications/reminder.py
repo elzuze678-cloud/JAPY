@@ -40,4 +40,30 @@ class ReminderModule(Module):
 
 
         if not found:
+
             print("No hay recordatorios pendientes.")
+
+
+    def next_run(self):
+
+        """
+        Devuelve cuándo necesita revisarse nuevamente.
+        """
+
+        future_events = []
+
+        for event in self.events:
+
+            if event.status == "Activo":
+
+                if event.datetime > datetime.now():
+
+                    future_events.append(event.datetime)
+
+
+        if future_events:
+
+            return min(future_events)
+
+
+        return None

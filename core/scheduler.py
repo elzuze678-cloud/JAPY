@@ -1,32 +1,48 @@
 from datetime import datetime
 
 
-class JapyScheduler:
+class Scheduler:
 
-    def update(self, modules):
+    def __init__(self, manager):
 
-        for module in modules:
+        self.manager = manager
 
-            if not module.enabled:
-                continue
 
-            if module.interval is None:
-                continue
+    def tick(self):
 
-            if module.last_update is None:
+        print("JAPY ejecutando ciclo...")
 
-                module.update()
+        for module in self.manager.modules:
 
-                module.last_update = datetime.now()
+            if not module.should_run():
 
                 continue
 
-            elapsed = (
-                datetime.now() - module.last_update
-            ).total_seconds()
+            module.update()
 
-            if elapsed >= module.interval:
 
-                module.update()
+    def get_next_run(self):
 
-                module.last_update = datetime.now()
+        next_times = []
+
+        for module in self.manager.modules:
+
+            if not module.should_run():
+
+                continue
+
+
+            next_time = module.next_run()
+
+
+            if next_time:
+
+                next_times.append(next_time)
+
+
+        if next_times:
+
+            return min(next_times)
+
+
+        return None
