@@ -3,30 +3,54 @@
         "title": "Estudiar programación",
         "date": "05/08/2026",
         "time": "20:00",
+        "reminders": [
+            30
+        ],
         "status": "Completado"
     },
     {
         "title": "Reunión proyecto",
         "date": "07/08/2026",
         "time": "18:00",
+        "reminders": [
+            30
+        ],
         "status": "Cancelado"
     },
     {
         "title": "Prueba JAPY",
         "date": "10/08/2026",
         "time": "10:00",
+        "reminders": [
+            30
+        ],
         "status": "Activo"
     },
     {
         "title": "Prueba descanso JAPY",
         "date": "10/08/2026",
         "time": "10:00",
+        "reminders": [
+            30
+        ],
         "status": "Activo"
     },
     {
         "title": "Prueba notificación JAPY",
         "date": "03/08/2026",
         "time": "22:03",
+        "reminders": [
+            30
+        ],
+        "status": "Activo"
+    },
+    {
+        "title": "Entrenar",
+        "date": "15/08/2026",
+        "time": "18:00",
+        "reminders": [
+            60
+        ],
         "status": "Activo"
     }
 ]
