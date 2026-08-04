@@ -1,4 +1,5 @@
 from voice.listener import Listener
+from voice.speaker import Speaker
 
 from core.interpreter.interpreter import Interpreter
 
@@ -11,9 +12,15 @@ class VoiceEngine:
 
         self.japy = japy
 
+
         self.listener = Listener()
 
+
+        self.speaker = Speaker()
+
+
         self.interpreter = Interpreter()
+
 
         self.running = False
 
@@ -25,13 +32,20 @@ class VoiceEngine:
             "🎙️ Motor de voz iniciado."
         )
 
+
         self.running = True
+
 
         self.listener.start()
 
 
 
     def listen_once(self):
+
+        if not self.running:
+
+            return
+
 
         text = self.listener.listen()
 
@@ -47,15 +61,16 @@ class VoiceEngine:
         )
 
 
+
         response = self.japy.execute(
             intent
         )
 
 
+
         if response:
 
-            print(
-                "JAPY:",
+            self.speaker.say(
                 response
             )
 

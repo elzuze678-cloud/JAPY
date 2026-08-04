@@ -9,9 +9,11 @@ class JapyRuntime:
 
         self.engine = engine
 
+
         self.voice = VoiceEngine(
             engine
         )
+
 
         self.running = False
 
@@ -54,17 +56,6 @@ class JapyRuntime:
         except KeyboardInterrupt:
 
             self.stop()
-
-
-
-    def listen_once(self):
-
-        if not self.running:
-
-            return
-
-
-        self.voice.listen_once()
 
 
 
