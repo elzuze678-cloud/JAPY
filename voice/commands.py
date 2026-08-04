@@ -17,48 +17,35 @@ class CommandProcessor:
 
         self.actions = {
 
-            "show_events": ShowEventsAction(
-                engine
-            ),
+            "mostrar_eventos":
+                ShowEventsAction(engine),
 
-            "system_status": SystemStatusAction(
-                engine
-            )
+
+            "estado":
+                SystemStatusAction(engine)
 
         }
 
 
 
-    def process(self, text):
+    def execute(self, intent):
 
-        if not text:
+
+        if not intent:
 
             return None
 
 
 
-        command = text.lower()
+        action = intent.action
 
 
 
-        if "hola" in command:
+        if action in self.actions:
 
-            return self.responses.hello()
-
-
-
-        if "estado" in command:
 
             return self.actions[
-                "system_status"
-            ].execute()
-
-
-
-        if "eventos" in command:
-
-            return self.actions[
-                "show_events"
+                action
             ].execute()
 
 
