@@ -7,7 +7,7 @@ class ShowEventsAction:
 
 
 
-    def execute(self):
+    def execute(self, data):
 
         for module in self.engine.manager.modules:
 

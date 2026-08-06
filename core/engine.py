@@ -4,12 +4,13 @@ from core.state import StateManager, JapyState
 from core.heartbeat import Heartbeat
 from core.sleep import SleepManager
 
-
 from core.skills.manager import SkillManager
 
 from core.skills.agenda.agenda_skill import AgendaSkill
 from core.skills.system.system_skill import SystemSkill
 from core.skills.conversation.conversation_skill import ConversationSkill
+
+from scheduler.calendar import CalendarModule
 
 
 
@@ -19,6 +20,15 @@ class JapyEngine:
     def __init__(self):
 
         self.manager = ModuleManager()
+
+
+        # Módulos principales de JAPY
+
+        agenda = CalendarModule()
+
+        self.add_module(
+            agenda
+        )
 
 
         self.state = StateManager()
