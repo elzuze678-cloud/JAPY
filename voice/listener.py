@@ -1,9 +1,15 @@
+import speech_recognition as sr
+
+
+
 class Listener:
 
 
     def __init__(self):
 
         self.active = False
+
+        self.recognizer = sr.Recognizer()
 
 
 
@@ -34,13 +40,52 @@ class Listener:
             return None
 
 
-        print(
-            "Usuario:",
-            end=" "
-        )
+
+        with sr.Microphone() as source:
+
+            print(
+                "👂 Escuchando..."
+            )
 
 
-        command = input()
+            audio = self.recognizer.listen(
+                source
+            )
 
 
-        return command
+        try:
+
+            text = self.recognizer.recognize_google(
+                audio,
+                language="es-ES"
+            )
+
+
+            print(
+                "Usuario:",
+                text
+            )
+
+
+            return text
+
+
+
+        except sr.UnknownValueError:
+
+            print(
+                "No entendí lo que dijiste."
+            )
+
+            return None
+
+
+
+        except Exception as e:
+
+            print(
+                "Error de voz:",
+                e
+            )
+
+            return None
