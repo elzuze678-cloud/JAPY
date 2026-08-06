@@ -4,11 +4,26 @@ class WakeWordDetector:
     def __init__(self):
 
         self.wake_words = [
+
+            # JAPY original
             "japy",
-            "hapy",
             "japi",
+            "yapi",
+
+            # Errores comunes de reconocimiento
+            "hapy",
+            "happy",
+            "abby",
+            "aby",
+            "abi",
+            "habby",
+            "yabby",
+
+            # Otras posibles confusiones
             "papi",
-            "yapi"
+            "dapi",
+            "api"
+
         ]
 
 
@@ -24,14 +39,15 @@ class WakeWordDetector:
         command = text.lower()
 
 
-
         words = command.split()
 
 
 
         for word in self.wake_words:
 
+
             if word in words:
+
 
                 words.remove(word)
 
