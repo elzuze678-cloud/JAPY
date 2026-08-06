@@ -3,7 +3,6 @@ import re
 from core.interpreter.date_parser import DateParser
 
 
-
 class EventExtractor:
 
 
@@ -32,6 +31,7 @@ class EventExtractor:
 
 
         # Buscar fecha escrita manualmente
+
         if "fecha" not in data:
 
             fecha = re.search(
@@ -47,6 +47,7 @@ class EventExtractor:
 
 
         # Buscar hora escrita manualmente
+
         if "hora" not in data:
 
             hora = re.search(
@@ -69,14 +70,36 @@ class EventExtractor:
 
         palabras = [
 
+            # Palabras de activación por voz
+
             "japy",
+            "papi",
+            "abby",
+            "happy",
+            "hapi",
+            "api",
+
+
+            # Comandos
+
             "crea",
             "crear",
+            "creame",
             "evento",
             "nuevo",
+
+
+            # Fechas
+
             "mañana",
             "hoy",
-            "a las"
+
+
+            # Finalizadores
+
+            "ya",
+            "listo",
+            "terminado"
 
         ]
 
@@ -91,7 +114,7 @@ class EventExtractor:
 
 
 
-        # Quitar fechas del título
+        # Quitar fechas
 
         titulo = re.sub(
             r"\b\d{2}/\d{2}/\d{4}\b",
@@ -101,12 +124,21 @@ class EventExtractor:
 
 
 
-        # Quitar horas del título
+        # Quitar horas
 
         titulo = re.sub(
             r"\b\d{1,2}:\d{2}\b",
             "",
             titulo
+        )
+
+
+
+        # Quitar palabras sobrantes
+
+        titulo = titulo.replace(
+            "a las",
+            ""
         )
 
 
