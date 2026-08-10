@@ -15,7 +15,6 @@ class CommandEndDetector:
         ]
 
 
-
     def clean(self, text):
 
         if not text:
@@ -23,21 +22,20 @@ class CommandEndDetector:
             return None
 
 
-
         words = text.lower().split()
-
 
 
         for word in self.end_words:
 
-
             if word in words:
 
-                words.remove(word)
+                words.remove(
+                    word
+                )
 
-
-                return " ".join(words)
-
+                return " ".join(
+                    words
+                )
 
 
         return text

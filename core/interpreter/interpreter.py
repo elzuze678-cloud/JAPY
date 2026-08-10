@@ -4,11 +4,11 @@ from core.interpreter.rules import (
     SHOW_EVENTS,
     SHOW_STATUS,
     CREATE_EVENT,
+    CANCEL_EVENT,
     GREETINGS
 )
 
 from core.interpreter.extractor import EventExtractor
-
 
 
 class Interpreter:
@@ -17,7 +17,6 @@ class Interpreter:
     def __init__(self):
 
         self.extractor = EventExtractor()
-
 
 
     def process(self, text):
@@ -30,6 +29,21 @@ class Interpreter:
         command = text.lower()
 
 
+        # Cancelar eventos
+
+        for word in CANCEL_EVENT:
+
+            if word in command:
+
+                data = self.extractor.extract(
+                    text
+                )
+
+                return Intent(
+                    "cancelar_evento",
+                    data
+                )
+
 
         # Crear eventos
 
@@ -41,12 +55,10 @@ class Interpreter:
                     text
                 )
 
-
                 return Intent(
                     "crear_evento",
                     data
                 )
-
 
 
         # Mostrar eventos
@@ -60,7 +72,6 @@ class Interpreter:
                 )
 
 
-
         # Estado
 
         for word in SHOW_STATUS:
@@ -72,7 +83,6 @@ class Interpreter:
                 )
 
 
-
         # Saludos
 
         for word in GREETINGS:
@@ -82,7 +92,6 @@ class Interpreter:
                 return Intent(
                     "saludo"
                 )
-
 
 
         return Intent(

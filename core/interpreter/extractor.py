@@ -5,32 +5,27 @@ from core.interpreter.date_parser import DateParser
 
 class EventExtractor:
 
-
     def __init__(self):
 
         self.date_parser = DateParser()
-
 
 
     def extract(self, text):
 
         data = {}
 
+        # =========================
+        # FECHA Y HORA
+        # =========================
 
-        # Obtener fecha y hora usando lenguaje natural
+        date_data = self.date_parser.parse(text)
 
-        date_data = self.date_parser.parse(
-            text
-        )
-
-
-        data.update(
-            date_data
-        )
+        data.update(date_data)
 
 
-
-        # Buscar fecha escrita manualmente
+        # =========================
+        # FECHA MANUAL
+        # =========================
 
         if "fecha" not in data:
 
@@ -39,14 +34,14 @@ class EventExtractor:
                 text
             )
 
-
             if fecha:
 
                 data["fecha"] = fecha.group()
 
 
-
-        # Buscar hora escrita manualmente
+        # =========================
+        # HORA MANUAL
+        # =========================
 
         if "hora" not in data:
 
@@ -55,66 +50,74 @@ class EventExtractor:
                 text
             )
 
-
             if hora:
 
                 data["hora"] = hora.group()
 
 
-
-        # Crear título limpio
+        # =========================
+        # TÍTULO
+        # =========================
 
         titulo = text.lower()
 
 
+        # =========================
+        # QUITAR WAKE WORDS
+        # =========================
 
-        palabras = [
-
-            # Palabras de activación por voz
+        palabras_wake = [
 
             "japy",
+            "japi",
+            "yapi",
             "papi",
             "abby",
+            "abi",
+            "aby",
+            "hapy",
             "happy",
-            "hapi",
-            "api",
-
-
-            # Comandos
-
-            "crea",
-            "crear",
-            "creame",
-            "evento",
-            "nuevo",
-
-
-            # Fechas
-
-            "mañana",
-            "hoy",
-
-
-            # Finalizadores
-
-            "ya",
-            "listo",
-            "terminado"
+            "habby",
+            "yabby"
 
         ]
 
 
+        for palabra in palabras_wake:
 
-        for palabra in palabras:
-
-            titulo = titulo.replace(
-                palabra,
-                ""
+            titulo = re.sub(
+                rf"\b{re.escape(palabra)}\b",
+                "",
+                titulo
             )
 
 
+        # =========================
+        # QUITAR COMANDOS
+        # =========================
 
-        # Quitar fechas
+        palabras_comando = [
+
+            "crea",
+            "crear",
+            "evento",
+            "nuevo"
+
+        ]
+
+
+        for palabra in palabras_comando:
+
+            titulo = re.sub(
+                rf"\b{re.escape(palabra)}\b",
+                "",
+                titulo
+            )
+
+
+        # =========================
+        # QUITAR FECHAS
+        # =========================
 
         titulo = re.sub(
             r"\b\d{2}/\d{2}/\d{4}\b",
@@ -123,9 +126,25 @@ class EventExtractor:
         )
 
 
+        titulo = re.sub(
+            r"\bmañana\b",
+            "",
+            titulo
+        )
 
-        # Quitar horas
 
+        titulo = re.sub(
+            r"\bhoy\b",
+            "",
+            titulo
+        )
+
+
+        # =========================
+        # QUITAR HORAS
+        # =========================
+
+        # 20:00
         titulo = re.sub(
             r"\b\d{1,2}:\d{2}\b",
             "",
@@ -133,26 +152,62 @@ class EventExtractor:
         )
 
 
-
-        # Quitar palabras sobrantes
-
-        titulo = titulo.replace(
-            "a las",
-            ""
+        # a las 20 horas
+        titulo = re.sub(
+            r"\ba\s+las\s+\d{1,2}\s+horas?\b",
+            "",
+            titulo
         )
 
 
+        # 20 horas
+        titulo = re.sub(
+            r"\b\d{1,2}\s+horas?\b",
+            "",
+            titulo
+        )
 
-        # Limpiar espacios
+
+        # a las 20
+        titulo = re.sub(
+            r"\ba\s+las\s+\d{1,2}\b",
+            "",
+            titulo
+        )
+
+
+        # =========================
+        # QUITAR "A LAS"
+        # =========================
+
+        titulo = re.sub(
+            r"\ba\s+las\b",
+            "",
+            titulo
+        )
+
+
+        # =========================
+        # LIMPIAR PUNTUACIÓN
+        # =========================
+
+        titulo = re.sub(
+            r"[,:]",
+            " ",
+            titulo
+        )
+
+
+        # =========================
+        # LIMPIAR ESPACIOS
+        # =========================
 
         titulo = " ".join(
             titulo.split()
         )
 
 
-
         data["titulo"] = titulo.strip()
-
 
 
         return data

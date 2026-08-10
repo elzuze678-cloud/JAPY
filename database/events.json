@@ -126,8 +126,17 @@
         "status": "Activo"
     },
     {
-        "title": "estudiar matemáticas",
-        "date": "06/08/2026",
+        "title": "el estudiar física",
+        "date": "11/08/2026",
+        "time": "20:00",
+        "reminders": [
+            30
+        ],
+        "status": "Activo"
+    },
+    {
+        "title": "a estudiar",
+        "date": "11/08/2026",
         "time": "20:00",
         "reminders": [
             30

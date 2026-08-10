@@ -1,15 +1,8 @@
-from voice.responses import JapyResponses
-
-
 class CreateEventAction:
-
 
     def __init__(self, engine):
 
         self.engine = engine
-
-        self.responses = JapyResponses()
-
 
 
     def execute(self, data):
@@ -27,13 +20,50 @@ class CreateEventAction:
         )
 
 
+        # =========================
+        # DATOS INCOMPLETOS
+        # =========================
+
         if not title or not date or not time:
 
-            return (
-                "No pude obtener "
-                "todos los datos del evento."
-            )
+            self.engine.pending_event = {
 
+                "titulo": title,
+
+                "fecha": date,
+
+                "hora": time
+
+            }
+
+
+            if not title:
+
+                return (
+                    "¿Qué nombre quieres ponerle "
+                    "al evento?"
+                )
+
+
+            if not date:
+
+                return (
+                    "¿Para qué día quieres "
+                    "programar el evento?"
+                )
+
+
+            if not time:
+
+                return (
+                    "¿A qué hora quieres "
+                    "programarlo?"
+                )
+
+
+        # =========================
+        # CREAR EVENTO
+        # =========================
 
         for module in self.engine.manager.modules:
 
@@ -47,9 +77,12 @@ class CreateEventAction:
                 )
 
 
+                self.engine.pending_event = None
+
+
                 return (
                     f"Evento '{title}' "
-                    "creado correctamente."
+                    f"creado correctamente."
                 )
 
 

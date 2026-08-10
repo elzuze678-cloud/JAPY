@@ -1,12 +1,18 @@
+CREATE_EVENT = [
+
+    "crea",
+    "crear"
+
+]
+
+
 SHOW_EVENTS = [
 
-    "evento",
-    "eventos",
-    "agenda",
-    "calendario",
-    "pendientes",
-    "pendiente",
-    "tareas"
+    "muestra",
+    "mostrar",
+    "muéstrame",
+    "ver",
+    "mis eventos"
 
 ]
 
@@ -14,22 +20,8 @@ SHOW_EVENTS = [
 SHOW_STATUS = [
 
     "estado",
-    "funcionando",
     "cómo estás",
     "como estas"
-
-]
-
-
-CREATE_EVENT = [
-
-    "crear",
-    "crea",
-    "agregar",
-    "agrega",
-    "añadir",
-    "añade",
-    "nuevo evento"
 
 ]
 
@@ -37,10 +29,21 @@ CREATE_EVENT = [
 GREETINGS = [
 
     "hola",
-    "buenas",
     "buenos días",
-    "buenos dias",
     "buenas tardes",
     "buenas noches"
+
+]
+
+
+CANCEL_EVENT = [
+
+    "cancela",
+    "cancelar",
+    "cancela el evento",
+    "elimina",
+    "eliminar",
+    "borra",
+    "borrar"
 
 ]

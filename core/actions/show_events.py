@@ -6,7 +6,6 @@ class ShowEventsAction:
         self.engine = engine
 
 
-
     def execute(self, data):
 
         for module in self.engine.manager.modules:
@@ -40,7 +39,7 @@ class ShowEventsAction:
                 return result
 
 
-
         return (
-            "No encuentro el módulo de agenda."
+            "No encuentro el módulo "
+            "de agenda."
         )

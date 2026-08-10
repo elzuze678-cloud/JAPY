@@ -1,59 +1,92 @@
 class WakeWordDetector:
 
 
-    def __init__(self):
+def __init__(self):
 
-        self.wake_words = [
+    self.wake_words = [
 
-            # JAPY original
-            "japy",
-            "japi",
-            "yapi",
+        "japy",
+        "japi",
+        "yapi",
 
-            # Errores comunes de reconocimiento
-            "hapy",
-            "happy",
-            "abby",
-            "aby",
-            "abi",
-            "habby",
-            "yabby",
+        "hapy",
+        "happy",
+        "abby",
+        "aby",
+        "abi",
+        "habby",
+        "yabby",
 
-            # Otras posibles confusiones
-            "papi",
-            "dapi",
-            "api"
-
-        ]
+        "papi",
+        "dapi",
+        "api"
+    ]
 
 
+    self.wake_phrases = [
 
-    def detect(self, text):
+        "ya vi"
 
-        if not text:
-
-            return None
-
+    ]
 
 
-        command = text.lower()
+def detect(self, text):
 
-
-        words = command.split()
-
-
-
-        for word in self.wake_words:
-
-
-            if word in words:
-
-
-                words.remove(word)
-
-
-                return " ".join(words)
-
-
+    if not text:
 
         return None
+
+
+    command = text.lower()
+
+
+    # =========================
+    # WAKE PHRASES
+    # =========================
+
+    for phrase in self.wake_phrases:
+
+        if phrase in command:
+
+            command = command.replace(
+                phrase,
+                ""
+            )
+
+            return command.strip()
+
+
+    # =========================
+    # WAKE WORDS
+    # =========================
+
+    words = command.split()
+
+    detected = False
+
+    cleaned_words = []
+
+
+    for word in words:
+
+        if word in self.wake_words:
+
+            detected = True
+
+            continue
+
+
+        cleaned_words.append(
+            word
+        )
+
+
+    if not detected:
+
+        return None
+
+
+    return " ".join(
+        cleaned_words
+    )
+

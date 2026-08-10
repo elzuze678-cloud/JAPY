@@ -1,3 +1,4 @@
+
 from core.manager import ModuleManager
 from core.scheduler import Scheduler
 from core.state import StateManager, JapyState
@@ -13,16 +14,19 @@ from core.skills.conversation.conversation_skill import ConversationSkill
 from scheduler.calendar import CalendarModule
 
 
-
 class JapyEngine:
-
 
     def __init__(self):
 
         self.manager = ModuleManager()
 
+        # Evento pendiente de completar
+        self.pending_event = None
 
-        # Módulos principales de JAPY
+
+        # =========================
+        # MÓDULOS PRINCIPALES
+        # =========================
 
         agenda = CalendarModule()
 
@@ -49,13 +53,13 @@ class JapyEngine:
         )
 
 
-        # Sistema de habilidades
+        # =========================
+        # SISTEMA DE HABILIDADES
+        # =========================
 
         self.skills = SkillManager()
 
-
         self.load_skills()
-
 
 
     def load_skills(self):
@@ -87,7 +91,6 @@ class JapyEngine:
             )
 
 
-
     def add_module(self, module):
 
         self.manager.add(
@@ -95,13 +98,11 @@ class JapyEngine:
         )
 
 
-
     def execute(self, intent):
 
         return self.skills.execute(
             intent
         )
-
 
 
     def start(self):
@@ -124,7 +125,6 @@ class JapyEngine:
         )
 
 
-
     def run(self):
 
         print(
@@ -138,7 +138,6 @@ class JapyEngine:
         print(
             "JAPY preparado."
         )
-
 
 
     def stop(self):
@@ -164,16 +163,16 @@ class JapyEngine:
         )
 
 
-
     def tick(self):
 
         self.scheduler.tick()
-
 
 
     def __str__(self):
 
         return (
             f"{self.state}\n"
-            f"Módulos cargados: {len(self.manager.modules)}"
+            f"Módulos cargados: "
+            f"{len(self.manager.modules)}"
         )
+

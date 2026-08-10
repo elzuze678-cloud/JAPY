@@ -1,24 +1,32 @@
 from voice.wake_word import WakeWordDetector
 
 
-wake = WakeWordDetector()
+detector = WakeWordDetector()
 
 
 tests = [
+
     "japy muéstrame mis eventos",
-    "papi crea evento estudiar mañana",
-    "hapy hola",
-    "hola japy"
-    "hola iapi"	
+
+    "papi muéstrame mis eventos",
+
+    "abby muéstrame mis eventos",
+
+    "ya vi muéstrame mis eventos",
+
+    "ya vi eh cancela estudiar matemáticas",
+
+    "hola muéstrame mis eventos"
+
 ]
 
 
 for text in tests:
 
-    result = wake.detect(text)
+    result = detector.detect(
+        text
+    )
 
     print(
-        text,
-        "->",
-        result
+        f"{text} -> {result}"
     )
