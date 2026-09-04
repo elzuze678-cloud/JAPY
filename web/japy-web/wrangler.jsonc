@@ -1,16 +1,11 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-
   "name": "japy-web",
-
   "main": "src/index.js",
-
   "compatibility_date": "2026-08-25",
-
   "observability": {
     "enabled": true
   },
-
   "upload_source_maps": true,
 
   "assets": {
@@ -24,5 +19,11 @@
       "database_name": "japy-db",
       "database_id": "8041eb82-dc8f-4c1c-a131-6e8df09ecd16"
     }
-  ]
+  ],
+
+  "triggers": {
+    "crons": [
+      "* * * * *"
+    ]
+  }
 }

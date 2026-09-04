@@ -6,130 +6,377 @@ import { v4 as uuidv4 } from "uuid";
    ========================================================= */
 
 /* =========================================================
+   PROCESAR NOTIFICACIONES
+   ========================================================= */
+
+async function processNotifications(env) {
+    const now = new Date().toISOString();
+
+    const result =
+        await env.japy_db
+            .prepare(
+                `
+                SELECT
+                    id,
+                    user_id,
+                    event_id,
+                    title,
+                    message,
+                    remind_at,
+                    status
+                FROM notifications
+                WHERE status = 'pending'
+                AND remind_at <= ?
+                ORDER BY remind_at ASC
+                LIMIT 100
+                `
+            )
+            .bind(now)
+            .all();
+
+    const notifications =
+        result.results || [];
+
+    if (!notifications.length) {
+        console.log(
+            "JAPY SCHEDULER: no hay notificaciones pendientes."
+        );
+
+        return {
+            processed: 0,
+            notifications: [],
+        };
+    }
+
+    const processed = [];
+
+    for (const notification of notifications) {
+        try {
+            /*
+             * Todavía no enviamos Push.
+             *
+             * READY significa que la notificación
+             * ya llegó a su momento y está preparada
+             * para el futuro sistema Push.
+             */
+
+            await env.japy_db
+                .prepare(
+                    `
+                    UPDATE notifications
+                    SET status = 'ready'
+                    WHERE id = ?
+                    AND status = 'pending'
+                    `
+                )
+                .bind(notification.id)
+                .run();
+
+            processed.push({
+                id:
+                    notification.id,
+
+                title:
+                    notification.title,
+
+                message:
+                    notification.message,
+
+                remind_at:
+                    notification.remind_at,
+
+                status:
+                    "ready",
+            });
+
+            console.log(
+                "JAPY SCHEDULER: notificación lista:",
+                notification.title
+            );
+
+        } catch (error) {
+            console.error(
+                "JAPY SCHEDULER NOTIFICATION ERROR:",
+                notification.id,
+                error
+            );
+        }
+    }
+
+    return {
+        processed:
+            processed.length,
+
+        notifications:
+            processed,
+    };
+}
+
+
+/* =========================================================
    UTILIDADES
    ========================================================= */
 
 function json(data, status = 200, headers = {}) {
-    return new Response(JSON.stringify(data), {
-        status,
-        headers: {
-            "Content-Type": "application/json; charset=utf-8",
-            ...headers,
-        },
-    });
+    return new Response(
+        JSON.stringify(data),
+        {
+            status,
+
+            headers: {
+                "Content-Type":
+                    "application/json; charset=utf-8",
+
+                ...headers,
+            },
+        }
+    );
 }
 
 function normalizeText(text) {
     return String(text || "")
         .toLowerCase()
         .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .replace(/\s+/g, " ")
+        .replace(
+            /[\u0300-\u036f]/g,
+            ""
+        )
+        .replace(
+            /\s+/g,
+            " "
+        )
         .trim();
 }
 
-function getCookie(request, name) {
-    const cookieHeader = request.headers.get("Cookie") || "";
-    const cookies = cookieHeader.split(";");
+function getCookie(
+    request,
+    name
+) {
+    const cookieHeader =
+        request.headers.get("Cookie") ||
+        "";
 
-    for (const cookie of cookies) {
-        const [key, ...valueParts] = cookie.trim().split("=");
+    const cookies =
+        cookieHeader.split(";");
 
-        if (key === name) {
-            return decodeURIComponent(valueParts.join("="));
+    for (
+        const cookie
+        of cookies
+    ) {
+        const [
+            key,
+            ...valueParts
+        ] =
+            cookie
+                .trim()
+                .split("=");
+
+        if (
+            key === name
+        ) {
+            return decodeURIComponent(
+                valueParts.join("=")
+            );
         }
     }
 
     return null;
 }
 
+
 /* =========================================================
    CONTRASEÑAS
    ========================================================= */
 
 async function hashPassword(password) {
-    const data = new TextEncoder().encode(password);
+    const data =
+        new TextEncoder().encode(
+            password
+        );
 
-    const hashBuffer = await crypto.subtle.digest(
-        "SHA-256",
-        data
-    );
+    const hashBuffer =
+        await crypto.subtle.digest(
+            "SHA-256",
+            data
+        );
 
-    return Array.from(new Uint8Array(hashBuffer))
-        .map((byte) => byte.toString(16).padStart(2, "0"))
+    return Array.from(
+        new Uint8Array(hashBuffer)
+    )
+        .map(
+            (byte) =>
+                byte
+                    .toString(16)
+                    .padStart(
+                        2,
+                        "0"
+                    )
+        )
         .join("");
 }
 
-async function verifyPassword(password, passwordHash) {
-    const hash = await hashPassword(password);
-    return hash === passwordHash;
+async function verifyPassword(
+    password,
+    passwordHash
+) {
+    const hash =
+        await hashPassword(
+            password
+        );
+
+    return hash ===
+        passwordHash;
 }
+
 
 /* =========================================================
    FECHAS
    ========================================================= */
 
-function getLocalDateParts(timeZone = "America/Santiago") {
+function getLocalDateParts(
+    timeZone = "America/Santiago"
+) {
     let formatter;
 
     try {
-        formatter = new Intl.DateTimeFormat("en-CA", {
-            timeZone,
-            year: "numeric",
-            month: "2-digit",
-            day: "2-digit",
-        });
+        formatter =
+            new Intl.DateTimeFormat(
+                "en-CA",
+                {
+                    timeZone,
+
+                    year:
+                        "numeric",
+
+                    month:
+                        "2-digit",
+
+                    day:
+                        "2-digit",
+                }
+            );
     } catch {
-        formatter = new Intl.DateTimeFormat("en-CA", {
-            timeZone: "America/Santiago",
-            year: "numeric",
-            month: "2-digit",
-            day: "2-digit",
-        });
+        formatter =
+            new Intl.DateTimeFormat(
+                "en-CA",
+                {
+                    timeZone:
+                        "America/Santiago",
+
+                    year:
+                        "numeric",
+
+                    month:
+                        "2-digit",
+
+                    day:
+                        "2-digit",
+                }
+            );
     }
 
-    const parts = formatter.formatToParts(new Date());
+    const parts =
+        formatter.formatToParts(
+            new Date()
+        );
+
     const result = {};
 
-    for (const part of parts) {
-        if (part.type !== "literal") {
-            result[part.type] = part.value;
+    for (
+        const part
+        of parts
+    ) {
+        if (
+            part.type !==
+            "literal"
+        ) {
+            result[
+                part.type
+            ] =
+                part.value;
         }
     }
 
     return {
-        year: Number(result.year),
-        month: Number(result.month),
-        day: Number(result.day),
+        year:
+            Number(
+                result.year
+            ),
+
+        month:
+            Number(
+                result.month
+            ),
+
+        day:
+            Number(
+                result.day
+            ),
     };
 }
 
-function formatDate(year, month, day) {
+function formatDate(
+    year,
+    month,
+    day
+) {
     return [
         year,
-        String(month).padStart(2, "0"),
-        String(day).padStart(2, "0"),
+
+        String(month)
+            .padStart(
+                2,
+                "0"
+            ),
+
+        String(day)
+            .padStart(
+                2,
+                "0"
+            ),
     ].join("-");
 }
 
-function addDays(year, month, day, amount) {
-    const date = new Date(
-        Date.UTC(year, month - 1, day)
-    );
+function addDays(
+    year,
+    month,
+    day,
+    amount
+) {
+    const date =
+        new Date(
+            Date.UTC(
+                year,
+                month - 1,
+                day
+            )
+        );
 
     date.setUTCDate(
-        date.getUTCDate() + amount
+        date.getUTCDate() +
+            amount
     );
 
     return {
-        year: date.getUTCFullYear(),
-        month: date.getUTCMonth() + 1,
-        day: date.getUTCDate(),
+        year:
+            date.getUTCFullYear(),
+
+        month:
+            date.getUTCMonth() +
+            1,
+
+        day:
+            date.getUTCDate(),
     };
 }
 
-function getTomorrow(timeZone = "America/Santiago") {
-    const today = getLocalDateParts(timeZone);
+function getTomorrow(
+    timeZone = "America/Santiago"
+) {
+    const today =
+        getLocalDateParts(
+            timeZone
+        );
 
     return addDays(
         today.year,
@@ -138,6 +385,7 @@ function getTomorrow(timeZone = "America/Santiago") {
         1
     );
 }
+
 
 /* =========================================================
    DÍAS DE LA SEMANA
@@ -159,44 +407,63 @@ function getDayOfWeekDate(
     dayName,
     timeZone = "America/Santiago"
 ) {
-    const normalized = normalizeText(dayName);
-    const targetDay = WEEKDAYS[normalized];
+    const normalized =
+        normalizeText(
+            dayName
+        );
 
-    if (targetDay === undefined) {
+    const targetDay =
+        WEEKDAYS[
+            normalized
+        ];
+
+    if (
+        targetDay ===
+        undefined
+    ) {
         return null;
     }
 
-    const today = getLocalDateParts(timeZone);
+    const today =
+        getLocalDateParts(
+            timeZone
+        );
 
-    const currentDate = new Date(
-        Date.UTC(
-            today.year,
-            today.month - 1,
-            today.day
-        )
-    );
+    const currentDate =
+        new Date(
+            Date.UTC(
+                today.year,
+                today.month - 1,
+                today.day
+            )
+        );
 
-    const currentDay = currentDate.getUTCDay();
+    const currentDay =
+        currentDate.getUTCDay();
 
-    let difference = targetDay - currentDay;
+    let difference =
+        targetDay -
+        currentDay;
 
-    /*
-     * Siempre buscamos el próximo día indicado.
-     */
-    if (difference <= 0) {
+    if (
+        difference <= 0
+    ) {
         difference += 7;
     }
 
     currentDate.setUTCDate(
-        currentDate.getUTCDate() + difference
+        currentDate.getUTCDate() +
+            difference
     );
 
     return formatDate(
         currentDate.getUTCFullYear(),
-        currentDate.getUTCMonth() + 1,
+        currentDate.getUTCMonth() +
+            1,
         currentDate.getUTCDate()
     );
 }
+
 
 /* =========================================================
    PARSER DE FECHAS
@@ -206,12 +473,21 @@ function parseDateFromText(
     text,
     timeZone = "America/Santiago"
 ) {
-    const normalized = normalizeText(text);
-    const today = getLocalDateParts(timeZone);
+    const normalized =
+        normalizeText(text);
+
+    const today =
+        getLocalDateParts(
+            timeZone
+        );
 
     /* HOY */
 
-    if (/\bhoy\b/i.test(normalized)) {
+    if (
+        /\bhoy\b/i.test(
+            normalized
+        )
+    ) {
         return formatDate(
             today.year,
             today.month,
@@ -222,14 +498,17 @@ function parseDateFromText(
     /* PASADO MAÑANA */
 
     if (
-        /\bpasado\s+manana\b/i.test(normalized)
+        /\bpasado\s+manana\b/i.test(
+            normalized
+        )
     ) {
-        const date = addDays(
-            today.year,
-            today.month,
-            today.day,
-            2
-        );
+        const date =
+            addDays(
+                today.year,
+                today.month,
+                today.day,
+                2
+            );
 
         return formatDate(
             date.year,
@@ -240,9 +519,15 @@ function parseDateFromText(
 
     /* MAÑANA */
 
-    if (/\bmanana\b/i.test(normalized)) {
+    if (
+        /\bmanana\b/i.test(
+            normalized
+        )
+    ) {
         const tomorrow =
-            getTomorrow(timeZone);
+            getTomorrow(
+                timeZone
+            );
 
         return formatDate(
             tomorrow.year,
@@ -253,20 +538,26 @@ function parseDateFromText(
 
     /* EN X DÍAS */
 
-    const daysMatch = normalized.match(
-        /\ben\s+(\d+)\s+d[ií]as?\b/i
-    );
-
-    if (daysMatch) {
-        const amount =
-            Number(daysMatch[1]);
-
-        const date = addDays(
-            today.year,
-            today.month,
-            today.day,
-            amount
+    const daysMatch =
+        normalized.match(
+            /\ben\s+(\d+)\s+d[ií]as?\b/i
         );
+
+    if (
+        daysMatch
+    ) {
+        const amount =
+            Number(
+                daysMatch[1]
+            );
+
+        const date =
+            addDays(
+                today.year,
+                today.month,
+                today.day,
+                amount
+            );
 
         return formatDate(
             date.year,
@@ -277,20 +568,29 @@ function parseDateFromText(
 
     /* FECHA NUMÉRICA */
 
-    const dateMatch = normalized.match(
-        /\b(\d{1,2})[\/-](\d{1,2})(?:[\/-](\d{4}))?\b/
-    );
+    const dateMatch =
+        normalized.match(
+            /\b(\d{1,2})[\/-](\d{1,2})(?:[\/-](\d{4}))?\b/
+        );
 
-    if (dateMatch) {
+    if (
+        dateMatch
+    ) {
         const day =
-            Number(dateMatch[1]);
+            Number(
+                dateMatch[1]
+            );
 
         const month =
-            Number(dateMatch[2]);
+            Number(
+                dateMatch[2]
+            );
 
         const year =
             dateMatch[3]
-                ? Number(dateMatch[3])
+                ? Number(
+                      dateMatch[3]
+                  )
                 : today.year;
 
         return formatDate(
@@ -300,13 +600,16 @@ function parseDateFromText(
         );
     }
 
-    /* PRÓXIMO / SIGUIENTE + DÍA */
+    /* DÍA DE LA SEMANA */
 
-    const weekdayPattern = normalized.match(
-        /\b(?:(?:el|este|proximo|próximo|siguiente|que\s+viene)\s+)?(domingo|lunes|martes|miercoles|miércoles|jueves|viernes|sabado|sábado)\b/i
-    );
+    const weekdayPattern =
+        normalized.match(
+            /\b(?:(?:el|este|proximo|próximo|siguiente|que\s+viene)\s+)?(domingo|lunes|martes|miercoles|miércoles|jueves|viernes|sabado|sábado)\b/i
+        );
 
-    if (weekdayPattern) {
+    if (
+        weekdayPattern
+    ) {
         return getDayOfWeekDate(
             weekdayPattern[1],
             timeZone
@@ -316,16 +619,23 @@ function parseDateFromText(
     /* PRÓXIMA SEMANA */
 
     if (
-        /\bproxima\s+semana\b/i.test(normalized) ||
-        /\bsemana\s+que\s+viene\b/i.test(normalized) ||
-        /\bsemana\s+siguiente\b/i.test(normalized)
+        /\bproxima\s+semana\b/i.test(
+            normalized
+        ) ||
+        /\bsemana\s+que\s+viene\b/i.test(
+            normalized
+        ) ||
+        /\bsemana\s+siguiente\b/i.test(
+            normalized
+        )
     ) {
-        const date = addDays(
-            today.year,
-            today.month,
-            today.day,
-            7
-        );
+        const date =
+            addDays(
+                today.year,
+                today.month,
+                today.day,
+                7
+            );
 
         return formatDate(
             date.year,
@@ -337,51 +647,144 @@ function parseDateFromText(
     return null;
 }
 
+
+/* =========================================================
+   REFERENCIAS
+   ========================================================= */
+
+function isSameTimeReference(
+    text
+) {
+    const normalized =
+        normalizeText(text);
+
+    return (
+        /\bmisma\s+hora\b/i.test(
+            normalized
+        ) ||
+
+        /\ba\s+esa\s+hora\b/i.test(
+            normalized
+        ) ||
+
+        /\ba\s+la\s+misma\b/i.test(
+            normalized
+        ) ||
+
+        /\bmanten\s+la\s+hora\b/i.test(
+            normalized
+        ) ||
+
+        /\bmantener\s+la\s+hora\b/i.test(
+            normalized
+        ) ||
+
+        /\bsin\s+cambiar\s+la\s+hora\b/i.test(
+            normalized
+        ) ||
+
+        normalized ===
+            "a la misma" ||
+
+        normalized ===
+            "misma" ||
+
+        normalized ===
+            "igual hora"
+    );
+}
+
+function isSameDateReference(
+    text
+) {
+    const normalized =
+        normalizeText(text);
+
+    return (
+        /\bmismo\s+dia\b/i.test(
+            normalized
+        ) ||
+
+        /\bmisma\s+fecha\b/i.test(
+            normalized
+        ) ||
+
+        /\ba\s+la\s+misma\s+fecha\b/i.test(
+            normalized
+        ) ||
+
+        /\bsin\s+cambiar\s+la\s+fecha\b/i.test(
+            normalized
+        ) ||
+
+        /\bmanten\s+la\s+fecha\b/i.test(
+            normalized
+        ) ||
+
+        /\bmantener\s+la\s+fecha\b/i.test(
+            normalized
+        )
+    );
+}
+
+
 /* =========================================================
    PARSER DE HORAS
    ========================================================= */
 
-function parseTimeFromText(text) {
-    const normalized = normalizeText(text);
+function parseTimeFromText(
+    text
+) {
+    const normalized =
+        normalizeText(text);
 
-    /*
-     * "misma hora" NO es una hora nueva.
-     */
-    if (isSameTimeReference(normalized)) {
+    if (
+        isSameTimeReference(
+            normalized
+        )
+    ) {
         return null;
     }
 
-    /* a las 18 / a las 18:30 / las 18 / a 18 */
+    const naturalMatch =
+        normalized.match(
+            /\b(?:a las|a la|las|a)\s+(\d{1,2})(?::(\d{2}))?\s*(?:horas|hora)?\b/i
+        );
 
-    const naturalMatch = normalized.match(
-        /\b(?:a las|a la|las|a)\s+(\d{1,2})(?::(\d{2}))?\s*(?:horas|hora)?\b/i
-    );
-
-    if (naturalMatch) {
+    if (
+        naturalMatch
+    ) {
         let hour =
-            Number(naturalMatch[1]);
+            Number(
+                naturalMatch[1]
+            );
 
         const minute =
             naturalMatch[2]
-                ? Number(naturalMatch[2])
+                ? Number(
+                      naturalMatch[2]
+                  )
                 : 0;
 
-        /*
-         * Revisamos AM / PM después de la hora.
-         */
-
-        const context = normalized.slice(
-            naturalMatch.index,
-            naturalMatch.index +
-                naturalMatch[0].length +
-                45
-        );
+        const context =
+            normalized.slice(
+                naturalMatch.index,
+                naturalMatch.index +
+                    naturalMatch[0].length +
+                    45
+            );
 
         if (
-            /\bde\s+la\s+tarde\b/i.test(context) ||
-            /\bde\s+la\s+noche\b/i.test(context)
+            /\bde\s+la\s+tarde\b/i.test(
+                context
+            ) ||
+            /\bde\s+la\s+noche\b/i.test(
+                context
+            )
         ) {
-            if (hour < 12) {
+            if (
+                hour < 12
+            ) {
                 hour += 12;
             }
         }
@@ -396,18 +799,23 @@ function parseTimeFromText(text) {
         }
     }
 
-    /* 18:30 */
+    const directMatch =
+        normalized.match(
+            /\b(\d{1,2}):(\d{2})\b/
+        );
 
-    const directMatch = normalized.match(
-        /\b(\d{1,2}):(\d{2})\b/
-    );
-
-    if (directMatch) {
+    if (
+        directMatch
+    ) {
         const hour =
-            Number(directMatch[1]);
+            Number(
+                directMatch[1]
+            );
 
         const minute =
-            Number(directMatch[2]);
+            Number(
+                directMatch[2]
+            );
 
         if (
             hour >= 0 &&
@@ -422,74 +830,35 @@ function parseTimeFromText(text) {
     return null;
 }
 
-/* =========================================================
-   REFERENCIAS DE MISMA HORA / MISMO DÍA
-   ========================================================= */
-
-function isSameTimeReference(text) {
-    const normalized =
-        normalizeText(text);
-
-    return (
-        /\bmisma\s+hora\b/i.test(normalized) ||
-        /\ba\s+esa\s+hora\b/i.test(normalized) ||
-        /\ba\s+la\s+misma\b/i.test(normalized) ||
-        /\bmant(?:en|ener)\s+la\s+hora\b/i.test(normalized) ||
-        /\bsin\s+cambiar\s+la\s+hora\b/i.test(normalized) ||
-        normalized === "a la misma" ||
-        normalized === "misma" ||
-        normalized === "igual hora"
-    );
-}
-
-function isSameDateReference(text) {
-    const normalized =
-        normalizeText(text);
-
-    return (
-        /\bmismo\s+dia\b/i.test(normalized) ||
-        /\bmismo\s+día\b/i.test(text) ||
-        /\bmisma\s+fecha\b/i.test(normalized) ||
-        /\ba\s+la\s+misma\s+fecha\b/i.test(normalized) ||
-        /\bsin\s+cambiar\s+la\s+fecha\b/i.test(normalized) ||
-        /\bmant(?:en|ener)\s+la\s+fecha\b/i.test(normalized)
-    );
-}
 
 /* =========================================================
-   EXTRACTOR DEL TÍTULO
+   EXTRACTOR DE TÍTULO
    ========================================================= */
 
-function extractEventTitle(text) {
+function extractEventTitle(
+    text
+) {
     let title =
-        String(text || "").trim();
+        String(text || "")
+            .trim();
 
-    title = title.replace(
-        /^(japy\s*)/i,
-        ""
-    );
+    title =
+        title.replace(
+            /^(japy\s*)/i,
+            ""
+        );
 
-    /*
-     * Comandos de creación.
-     */
+    title =
+        title.replace(
+            /^(creame\s+(?:un|el)?\s*evento|créame\s+(?:un|el)?\s*evento|crea\s+(?:un|el)?\s*evento|crear\s+(?:un|el)?\s*evento)\s*/i,
+            ""
+        );
 
-    title = title.replace(
-        /^(creame\s+(?:un|el)?\s*evento|créame\s+(?:un|el)?\s*evento|crea\s+(?:un|el)?\s*evento|crear\s+(?:un|el)?\s*evento)\s*/i,
-        ""
-    );
-
-    /*
-     * Formas simples.
-     */
-
-    title = title.replace(
-        /^(el\s+evento|un\s+evento|evento)\s*/i,
-        ""
-    );
-
-    /*
-     * Referencias temporales.
-     */
+    title =
+        title.replace(
+            /^(el\s+evento|un\s+evento|evento)\s*/i,
+            ""
+        );
 
     const temporalPatterns = [
         /\bpasado\s+mañana\b/i,
@@ -521,13 +890,19 @@ function extractEventTitle(text) {
     let cutPosition =
         title.length;
 
-    for (const pattern of temporalPatterns) {
+    for (
+        const pattern
+        of temporalPatterns
+    ) {
         const match =
-            pattern.exec(title);
+            pattern.exec(
+                title
+            );
 
         if (
             match &&
-            match.index < cutPosition
+            match.index <
+                cutPosition
         ) {
             cutPosition =
                 match.index;
@@ -536,16 +911,11 @@ function extractEventTitle(text) {
 
     title =
         title
-            .substring(0, cutPosition)
+            .substring(
+                0,
+                cutPosition
+            )
             .trim();
-
-    /*
-     * Conectores sobrantes.
-     *
-     * Añadimos "al" para:
-     *
-     * "andar en skate al sábado"
-     */
 
     title =
         title.replace(
@@ -554,9 +924,13 @@ function extractEventTitle(text) {
         );
 
     return title
-        .replace(/\s+/g, " ")
+        .replace(
+            /\s+/g,
+            " "
+        )
         .trim();
 }
+
 
 /* =========================================================
    AUTENTICACIÓN
@@ -619,14 +993,22 @@ async function getAuthenticatedUser(
     }
 
     return {
-        id: session.user_id,
-        name: session.name,
-        email: session.email,
+        id:
+            session.user_id,
+
+        name:
+            session.name,
+
+        email:
+            session.email,
+
         sessionId,
+
         expiresAt:
             session.expires_at,
     };
 }
+
 
 /* =========================================================
    CONTEXTO CONVERSACIONAL
@@ -694,7 +1076,9 @@ async function saveConversationContext(
         )
         .bind(
             userId,
-            JSON.stringify(context),
+            JSON.stringify(
+                context
+            ),
             updatedAt
         )
         .run();
@@ -715,8 +1099,125 @@ async function clearConversationContext(
         .run();
 }
 
+
 /* =========================================================
-   CREAR EVENTO
+   FECHA/HORA LOCAL → UTC
+   ========================================================= */
+
+function localDateTimeToUTC(
+    date,
+    time,
+    timeZone =
+        "America/Santiago"
+) {
+    const [
+        year,
+        month,
+        day,
+    ] =
+        date
+            .split("-")
+            .map(Number);
+
+    const [
+        hour,
+        minute,
+    ] =
+        time
+            .split(":")
+            .map(Number);
+
+    const initialUTC =
+        Date.UTC(
+            year,
+            month - 1,
+            day,
+            hour,
+            minute,
+            0
+        );
+
+    const formatter =
+        new Intl.DateTimeFormat(
+            "en-US",
+            {
+                timeZone,
+
+                year:
+                    "numeric",
+
+                month:
+                    "2-digit",
+
+                day:
+                    "2-digit",
+
+                hour:
+                    "2-digit",
+
+                minute:
+                    "2-digit",
+
+                second:
+                    "2-digit",
+
+                hourCycle:
+                    "h23",
+            }
+        );
+
+    const parts =
+        formatter.formatToParts(
+            new Date(
+                initialUTC
+            )
+        );
+
+    const values = {};
+
+    for (
+        const part
+        of parts
+    ) {
+        if (
+            part.type !==
+            "literal"
+        ) {
+            values[
+                part.type
+            ] =
+                Number(
+                    part.value
+                );
+        }
+    }
+
+    const displayedUTC =
+        Date.UTC(
+            values.year,
+            values.month - 1,
+            values.day,
+            values.hour,
+            values.minute,
+            values.second
+        );
+
+    const offset =
+        displayedUTC -
+        initialUTC;
+
+    const actualUTC =
+        initialUTC -
+        offset;
+
+    return new Date(
+        actualUTC
+    );
+}
+
+
+/* =========================================================
+   CREAR EVENTO + RECORDATORIO
    ========================================================= */
 
 async function createEvent(
@@ -724,13 +1225,19 @@ async function createEvent(
     title,
     date,
     time,
-    env
+    env,
+    timeZone =
+        "America/Santiago"
 ) {
     const eventId =
         uuidv4();
 
     const createdAt =
         new Date().toISOString();
+
+    /*
+     * Crear evento.
+     */
 
     await env.japy_db
         .prepare(
@@ -756,13 +1263,101 @@ async function createEvent(
         )
         .run();
 
+    let notification =
+        null;
+
+    /*
+     * Crear recordatorio 30 minutos antes.
+     */
+
+    if (
+        time
+    ) {
+        try {
+            const eventDateTime =
+                localDateTimeToUTC(
+                    date,
+                    time,
+                    timeZone
+                );
+
+            const remindAt =
+                new Date(
+                    eventDateTime.getTime() -
+                        30 *
+                            60 *
+                            1000
+                );
+
+            const notificationId =
+                uuidv4();
+
+            const notificationTitle =
+                `Recordatorio: ${title}`;
+
+            const notificationMessage =
+                `En 30 minutos tienes "${title}".`;
+
+            await env.japy_db
+                .prepare(
+                    `
+                    INSERT INTO notifications (
+                        id,
+                        user_id,
+                        event_id,
+                        remind_at,
+                        title,
+                        message,
+                        status,
+                        created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)
+                    `
+                )
+                .bind(
+                    notificationId,
+                    userId,
+                    eventId,
+                    remindAt.toISOString(),
+                    notificationTitle,
+                    notificationMessage,
+                    createdAt
+                )
+                .run();
+
+            notification = {
+                id:
+                    notificationId,
+
+                remind_at:
+                    remindAt.toISOString(),
+
+                status:
+                    "pending",
+            };
+
+        } catch (error) {
+            console.error(
+                "NOTIFICATION CREATE ERROR:",
+                error
+            );
+        }
+    }
+
     return {
-        id: eventId,
+        id:
+            eventId,
+
         title,
+
         date,
+
         time,
+
+        notification,
     };
 }
+
 
 /* =========================================================
    EDITAR EVENTO
@@ -824,16 +1419,40 @@ async function editEvent(
         )
         .run();
 
+    /*
+     * Eliminar recordatorios anteriores.
+     */
+
+    await env.japy_db
+        .prepare(
+            `
+            DELETE FROM notifications
+            WHERE event_id = ?
+            `
+        )
+        .bind(
+            eventId
+        )
+        .run();
+
     return {
-        id: event.id,
-        title: event.title,
-        date: newDate,
-        time: newTime,
+        id:
+            event.id,
+
+        title:
+            event.title,
+
+        date:
+            newDate,
+
+        time:
+            newTime,
     };
 }
 
+
 /* =========================================================
-   BÚSQUEDA INTELIGENTE DE EVENTO
+   BÚSQUEDA INTELIGENTE DE EVENTOS
    ========================================================= */
 
 async function findEventByTitle(
@@ -843,7 +1462,10 @@ async function findEventByTitle(
 ) {
     const cleanTitle =
         String(title || "")
-            .replace(/\s+/g, " ")
+            .replace(
+                /\s+/g,
+                " "
+            )
             .trim();
 
     if (!cleanTitle) {
@@ -851,7 +1473,7 @@ async function findEventByTitle(
     }
 
     /*
-     * 1. Coincidencia exacta.
+     * Exacto.
      */
 
     const exact =
@@ -880,17 +1502,19 @@ async function findEventByTitle(
     }
 
     /*
-     * 2. Coincidencia parcial.
+     * Parcial.
      *
-     * La hacemos en ambos sentidos.
-     *
+     * Ejemplo:
      * "skate" -> "andar en skate"
      */
 
     const normalizedTitle =
         cleanTitle
             .toLowerCase()
-            .replace(/[%_]/g, " ");
+            .replace(
+                /[%_]/g,
+                " "
+            );
 
     const partial =
         await env.japy_db
@@ -908,10 +1532,6 @@ async function findEventByTitle(
                     OR LOWER(?) LIKE '%' || LOWER(title) || '%'
                 )
                 ORDER BY
-                    CASE
-                        WHEN LOWER(title) LIKE LOWER(?) THEN 0
-                        ELSE 1
-                    END,
                     date ASC,
                     time ASC
                 LIMIT 2
@@ -920,29 +1540,26 @@ async function findEventByTitle(
             .bind(
                 userId,
                 `%${normalizedTitle}%`,
-                normalizedTitle,
-                `%${normalizedTitle}%`
+                normalizedTitle
             )
             .all();
 
     const matches =
-        partial.results || [];
+        partial.results ||
+        [];
 
-    /*
-     * Solo usamos coincidencia parcial
-     * si es única, para evitar elegir
-     * un evento ambiguo.
-     */
-
-    if (matches.length === 1) {
+    if (
+        matches.length === 1
+    ) {
         return matches[0];
     }
 
     return null;
 }
 
+
 /* =========================================================
-   CONTINUAR CREACIÓN DE EVENTO
+   CONTINUAR CREACIÓN
    ========================================================= */
 
 async function continueCreateEventConversation(
@@ -959,9 +1576,13 @@ async function continueCreateEventConversation(
         );
 
     const timeFromMessage =
-        parseTimeFromText(message);
+        parseTimeFromText(
+            message
+        );
 
-    /* ESPERANDO TÍTULO */
+    /*
+     * ESPERANDO TÍTULO
+     */
 
     if (
         context.awaiting ===
@@ -978,7 +1599,9 @@ async function continueCreateEventConversation(
 
         if (!title) {
             return json({
-                type: "chat",
+                type:
+                    "chat",
+
                 response:
                     "No alcancé a entender el nombre del evento. ¿Qué evento quieres crear?",
             });
@@ -1008,7 +1631,9 @@ async function continueCreateEventConversation(
             );
 
             return json({
-                type: "chat",
+                type:
+                    "chat",
+
                 response:
                     `Perfecto. ¿Para qué día es "${context.title}"?`,
             });
@@ -1025,14 +1650,18 @@ async function continueCreateEventConversation(
             );
 
             return json({
-                type: "chat",
+                type:
+                    "chat",
+
                 response:
                     `Perfecto. ¿A qué hora será "${context.title}"?`,
             });
         }
     }
 
-    /* ESPERANDO FECHA */
+    /*
+     * ESPERANDO FECHA
+     */
 
     if (
         context.awaiting ===
@@ -1050,7 +1679,9 @@ async function continueCreateEventConversation(
 
         if (!context.date) {
             return json({
-                type: "chat",
+                type:
+                    "chat",
+
                 response:
                     "Necesito el día. Puedes decirme “mañana”, “el viernes” o “12/09”.",
             });
@@ -1067,14 +1698,18 @@ async function continueCreateEventConversation(
             );
 
             return json({
-                type: "chat",
+                type:
+                    "chat",
+
                 response:
                     `Perfecto. ¿A qué hora será "${context.title}"?`,
             });
         }
     }
 
-    /* ESPERANDO HORA */
+    /*
+     * ESPERANDO HORA
+     */
 
     if (
         context.awaiting ===
@@ -1092,14 +1727,18 @@ async function continueCreateEventConversation(
 
         if (!context.time) {
             return json({
-                type: "chat",
+                type:
+                    "chat",
+
                 response:
                     "Necesito la hora. Por ejemplo: “15:00” o “a las 15”.",
             });
         }
     }
 
-    /* COMPLETO */
+    /*
+     * COMPLETO
+     */
 
     if (
         context.title &&
@@ -1112,7 +1751,8 @@ async function continueCreateEventConversation(
                 context.title,
                 context.date,
                 context.time,
-                env
+                env,
+                timeZone
             );
 
         await clearConversationContext(
@@ -1138,11 +1778,14 @@ async function continueCreateEventConversation(
     );
 
     return json({
-        type: "chat",
+        type:
+            "chat",
+
         response:
             "Estoy recopilando los datos del evento.",
     });
 }
+
 
 /* =========================================================
    CONTINUAR EDICIÓN
@@ -1162,7 +1805,9 @@ async function continueEditEventConversation(
         );
 
     const timeFromMessage =
-        parseTimeFromText(message);
+        parseTimeFromText(
+            message
+        );
 
     const sameTime =
         isSameTimeReference(
@@ -1175,7 +1820,7 @@ async function continueEditEventConversation(
         );
 
     /*
-     * "misma hora" conserva la hora original.
+     * Misma hora.
      */
 
     if (
@@ -1187,7 +1832,7 @@ async function continueEditEventConversation(
     }
 
     /*
-     * "mismo día" conserva el día original.
+     * Misma fecha.
      */
 
     if (
@@ -1208,26 +1853,18 @@ async function continueEditEventConversation(
             timeFromMessage;
     }
 
-    /*
-     * Si todavía no hay ningún cambio.
-     */
-
     if (
         !context.date &&
         !context.time
     ) {
         return json({
-            type: "chat",
+            type:
+                "chat",
+
             response:
                 "Dime qué quieres cambiar. Por ejemplo: “mañana a las 20”, “el sábado” o “a la misma hora”.",
         });
     }
-
-    /*
-     * Si tenemos al menos un cambio,
-     * aplicamos manteniendo los valores
-     * originales cuando no se modifican.
-     */
 
     const finalDate =
         context.date ??
@@ -1253,10 +1890,70 @@ async function continueEditEventConversation(
         );
 
         return json({
-            type: "chat",
+            type:
+                "chat",
+
             response:
                 "No pude encontrar ese evento.",
         });
+    }
+
+    /*
+     * Recrear recordatorio.
+     */
+
+    if (
+        event.time
+    ) {
+        try {
+            const eventDateTime =
+                localDateTimeToUTC(
+                    event.date,
+                    event.time,
+                    timeZone
+                );
+
+            const remindAt =
+                new Date(
+                    eventDateTime.getTime() -
+                        30 *
+                            60 *
+                            1000
+                );
+
+            await env.japy_db
+                .prepare(
+                    `
+                    INSERT INTO notifications (
+                        id,
+                        user_id,
+                        event_id,
+                        remind_at,
+                        title,
+                        message,
+                        status,
+                        created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)
+                    `
+                )
+                .bind(
+                    uuidv4(),
+                    user.id,
+                    event.id,
+                    remindAt.toISOString(),
+                    `Recordatorio: ${event.title}`,
+                    `En 30 minutos tienes "${event.title}".`,
+                    new Date().toISOString()
+                )
+                .run();
+
+        } catch (error) {
+            console.error(
+                "UPDATED NOTIFICATION ERROR:",
+                error
+            );
+        }
     }
 
     await clearConversationContext(
@@ -1279,6 +1976,7 @@ async function continueEditEventConversation(
         event,
     });
 }
+
 
 /* =========================================================
    CHAT PRINCIPAL
@@ -1314,9 +2012,9 @@ async function handleChat(
             message
         );
 
-    /* =====================================================
-       CONTEXTO EXISTENTE
-       ===================================================== */
+    /*
+     * CONTEXTO
+     */
 
     const existingContext =
         await getConversationContext(
@@ -1324,16 +2022,22 @@ async function handleChat(
             env
         );
 
-    if (existingContext) {
+    if (
+        existingContext
+    ) {
         /*
-         * Cancelar conversación.
+         * Cancelar flujo.
          */
 
         if (
-            normalized === "cancelar" ||
-            normalized === "cancela" ||
-            normalized === "olvidalo" ||
-            normalized === "olvidelo"
+            normalized ===
+                "cancelar" ||
+            normalized ===
+                "cancela" ||
+            normalized ===
+                "olvidalo" ||
+            normalized ===
+                "olvidelo"
         ) {
             await clearConversationContext(
                 user.id,
@@ -1341,19 +2045,21 @@ async function handleChat(
             );
 
             return json({
-                type: "chat",
+                type:
+                    "chat",
+
                 response:
                     "De acuerdo. Cancelé la operación.",
             });
         }
 
         /*
-         * CREAR
+         * Crear
          */
 
         if (
             existingContext.flow ===
-            "create_event"
+                "create_event"
         ) {
             return continueCreateEventConversation(
                 message,
@@ -1365,12 +2071,12 @@ async function handleChat(
         }
 
         /*
-         * EDITAR
+         * Editar
          */
 
         if (
             existingContext.flow ===
-            "edit_event"
+                "edit_event"
         ) {
             return continueEditEventConversation(
                 message,
@@ -1382,6 +2088,7 @@ async function handleChat(
         }
     }
 
+
     /* =====================================================
        SALUDOS
        ===================================================== */
@@ -1389,58 +2096,90 @@ async function handleChat(
     if (
         normalized === "hola" ||
         normalized === "hola japy" ||
-        normalized.startsWith("hola ")
+        normalized.startsWith(
+            "hola "
+        )
     ) {
         return json({
-            type: "chat",
+            type:
+                "chat",
+
             response:
                 `¡Hola, ${user.name}! 👋 ¿Qué hacemos?`,
         });
     }
+
 
     /* =====================================================
        GRACIAS
        ===================================================== */
 
     if (
-        normalized === "gracias" ||
-        normalized === "muchas gracias" ||
-        normalized === "gracias japy"
+        normalized ===
+            "gracias" ||
+        normalized ===
+            "muchas gracias" ||
+        normalized ===
+            "gracias japy"
     ) {
         return json({
-            type: "chat",
+            type:
+                "chat",
+
             response:
                 "¡De nada! 😄",
         });
     }
+
 
     /* =====================================================
        IDENTIDAD
        ===================================================== */
 
     if (
-        normalized.includes("quien eres") ||
-        normalized.includes("que eres") ||
-        normalized.includes("quien es japy")
+        normalized.includes(
+            "quien eres"
+        ) ||
+        normalized.includes(
+            "que eres"
+        ) ||
+        normalized.includes(
+            "quien es japy"
+        )
     ) {
         return json({
-            type: "chat",
+            type:
+                "chat",
+
             response:
                 "Soy JAPY. Más que un asistente, quiero ser un compañero que te ayude a organizar y simplificar tu día. 🤖",
         });
     }
+
 
     /* =====================================================
        MOSTRAR EVENTOS
        ===================================================== */
 
     if (
-        normalized.includes("mis eventos") ||
-        normalized.includes("muestra mis eventos") ||
-        normalized.includes("mostrar mis eventos") ||
-        normalized.includes("ver mis eventos") ||
-        normalized.includes("que tengo") ||
-        normalized.includes("qué tengo")
+        normalized.includes(
+            "mis eventos"
+        ) ||
+        normalized.includes(
+            "muestra mis eventos"
+        ) ||
+        normalized.includes(
+            "mostrar mis eventos"
+        ) ||
+        normalized.includes(
+            "ver mis eventos"
+        ) ||
+        normalized.includes(
+            "que tengo"
+        ) ||
+        normalized.includes(
+            "qué tengo"
+        )
     ) {
         const result =
             await env.japy_db
@@ -1457,19 +2196,26 @@ async function handleChat(
                     ORDER BY date ASC, time ASC
                     `
                 )
-                .bind(user.id)
+                .bind(
+                    user.id
+                )
                 .all();
 
         return json({
-            type: "events",
+            type:
+                "events",
+
             events:
-                result.results || [],
+                result.results ||
+                [],
+
             response:
                 result.results?.length
                     ? "Estos son tus próximos eventos:"
                     : "No tienes eventos guardados todavía.",
         });
     }
+
 
     /* =====================================================
        CREAR EVENTO
@@ -1480,7 +2226,9 @@ async function handleChat(
             normalized
         );
 
-    if (createCommand) {
+    if (
+        createCommand
+    ) {
         const title =
             extractEventTitle(
                 message
@@ -1514,6 +2262,10 @@ async function handleChat(
                 null,
         };
 
+        /*
+         * Falta título.
+         */
+
         if (!context.title) {
             context.awaiting =
                 "title";
@@ -1525,11 +2277,17 @@ async function handleChat(
             );
 
             return json({
-                type: "chat",
+                type:
+                    "chat",
+
                 response:
                     "Claro. ¿Qué evento quieres crear?",
             });
         }
+
+        /*
+         * Falta fecha.
+         */
 
         if (!context.date) {
             context.awaiting =
@@ -1542,11 +2300,17 @@ async function handleChat(
             );
 
             return json({
-                type: "chat",
+                type:
+                    "chat",
+
                 response:
                     `Perfecto. El evento será "${context.title}". ¿Para qué día?`,
             });
         }
+
+        /*
+         * Falta hora.
+         */
 
         if (!context.time) {
             context.awaiting =
@@ -1559,11 +2323,17 @@ async function handleChat(
             );
 
             return json({
-                type: "chat",
+                type:
+                    "chat",
+
                 response:
                     `Perfecto. Será el ${context.date}. ¿A qué hora?`,
             });
         }
+
+        /*
+         * Crear completo.
+         */
 
         const event =
             await createEvent(
@@ -1571,7 +2341,8 @@ async function handleChat(
                 context.title,
                 context.date,
                 context.time,
-                env
+                env,
+                timeZone
             );
 
         await clearConversationContext(
@@ -1590,6 +2361,7 @@ async function handleChat(
         });
     }
 
+
     /* =====================================================
        EDITAR EVENTO
        ===================================================== */
@@ -1599,13 +2371,11 @@ async function handleChat(
             normalized
         );
 
-    if (editCommand) {
+    if (
+        editCommand
+    ) {
         let searchTitle =
             message;
-
-        /*
-         * Quitar JAPY.
-         */
 
         searchTitle =
             searchTitle.replace(
@@ -1613,19 +2383,11 @@ async function handleChat(
                 ""
             );
 
-        /*
-         * Quitar verbo.
-         */
-
         searchTitle =
             searchTitle.replace(
                 /^(cambia|cambiar|modifica|modificar|edita|editar|actualiza|actualizar)\s*/i,
                 ""
             );
-
-        /*
-         * Quitar "el evento".
-         */
 
         searchTitle =
             searchTitle.replace(
@@ -1633,16 +2395,13 @@ async function handleChat(
                 ""
             );
 
-        /*
-         * Buscar la primera referencia temporal.
-         */
-
         let titleEnd =
             searchTitle.length;
 
         const temporalPatterns = [
             /\bpasado\s+mañana\b/i,
             /\bpasado\s+manana\b/i,
+
             /\bmañana\b/i,
             /\bmanana\b/i,
             /\bhoy\b/i,
@@ -1658,13 +2417,12 @@ async function handleChat(
             /\blas\s+\d{1,2}(?::\d{2})?(?:\s+(?:horas?|de\s+la\s+(?:mañana|tarde|noche)))?\b/i,
 
             /\b\d{1,2}:\d{2}\b/i,
-
-            /\bal\s+(?:lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo)\b/i,
-
-            /\bpara\s+(?:el\s+)?(?:lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo)\b/i,
         ];
 
-        for (const pattern of temporalPatterns) {
+        for (
+            const pattern
+            of temporalPatterns
+        ) {
             const match =
                 pattern.exec(
                     searchTitle
@@ -1672,17 +2430,13 @@ async function handleChat(
 
             if (
                 match &&
-                match.index < titleEnd
+                match.index <
+                    titleEnd
             ) {
                 titleEnd =
                     match.index;
             }
         }
-
-        /*
-         * También eliminamos conectores que
-         * hayan quedado antes de la referencia.
-         */
 
         searchTitle =
             searchTitle
@@ -1708,15 +2462,13 @@ async function handleChat(
 
         if (!searchTitle) {
             return json({
-                type: "chat",
+                type:
+                    "chat",
+
                 response:
                     "Claro. ¿Qué evento quieres modificar?",
             });
         }
-
-        /*
-         * Buscar exacto o parcial.
-         */
 
         const event =
             await findEventByTitle(
@@ -1727,7 +2479,9 @@ async function handleChat(
 
         if (!event) {
             return json({
-                type: "chat",
+                type:
+                    "chat",
+
                 response:
                     `No encontré un evento llamado "${searchTitle}".`,
             });
@@ -1754,31 +2508,18 @@ async function handleChat(
                 message
             );
 
-        /*
-         * Misma fecha -> conservar.
-         */
-
-        if (
-            sameDate
-        ) {
+        if (sameDate) {
             newDate =
                 event.date;
         }
 
-        /*
-         * Misma hora -> conservar.
-         */
-
-        if (
-            sameTime
-        ) {
+        if (sameTime) {
             newTime =
                 event.time;
         }
 
         /*
-         * Si ya tenemos algún cambio,
-         * actualizamos directamente.
+         * Cambio directo.
          */
 
         if (
@@ -1793,6 +2534,64 @@ async function handleChat(
                     newTime,
                     env
                 );
+
+            /*
+             * Crear nuevo recordatorio.
+             */
+
+            if (
+                updatedEvent.time
+            ) {
+                try {
+                    const eventDateTime =
+                        localDateTimeToUTC(
+                            updatedEvent.date,
+                            updatedEvent.time,
+                            timeZone
+                        );
+
+                    const remindAt =
+                        new Date(
+                            eventDateTime.getTime() -
+                                30 *
+                                    60 *
+                                    1000
+                        );
+
+                    await env.japy_db
+                        .prepare(
+                            `
+                            INSERT INTO notifications (
+                                id,
+                                user_id,
+                                event_id,
+                                remind_at,
+                                title,
+                                message,
+                                status,
+                                created_at
+                            )
+                            VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)
+                            `
+                        )
+                        .bind(
+                            uuidv4(),
+                            user.id,
+                            updatedEvent.id,
+                            remindAt.toISOString(),
+                            `Recordatorio: ${updatedEvent.title}`,
+                            `En 30 minutos tienes "${updatedEvent.title}".`,
+                            new Date().toISOString()
+                        )
+                        .run();
+
+                } catch (error) {
+                    console.error(
+                        "UPDATED NOTIFICATION ERROR:",
+                        error
+                    );
+                }
+            }
 
             return json({
                 type:
@@ -1812,10 +2611,7 @@ async function handleChat(
         }
 
         /*
-         * Crear contexto de edición.
-         *
-         * IMPORTANTE:
-         * guardamos fecha y hora originales.
+         * Guardar contexto.
          */
 
         const context = {
@@ -1851,11 +2647,14 @@ async function handleChat(
         );
 
         return json({
-            type: "chat",
+            type:
+                "chat",
+
             response:
                 `Encontré "${event.title}". ¿Qué quieres cambiar?`,
         });
     }
+
 
     /* =====================================================
        CANCELAR EVENTO
@@ -1866,7 +2665,9 @@ async function handleChat(
             normalized
         );
 
-    if (cancelCommand) {
+    if (
+        cancelCommand
+    ) {
         let title =
             message;
 
@@ -1893,7 +2694,9 @@ async function handleChat(
 
         if (!title) {
             return json({
-                type: "chat",
+                type:
+                    "chat",
+
                 response:
                     "Claro. ¿Qué evento quieres cancelar?",
             });
@@ -1908,7 +2711,9 @@ async function handleChat(
 
         if (!event) {
             return json({
-                type: "chat",
+                type:
+                    "chat",
+
                 response:
                     `No encontré un evento llamado "${title}".`,
             });
@@ -1928,6 +2733,18 @@ async function handleChat(
             )
             .run();
 
+        await env.japy_db
+            .prepare(
+                `
+                DELETE FROM notifications
+                WHERE event_id = ?
+                `
+            )
+            .bind(
+                event.id
+            )
+            .run();
+
         return json({
             type:
                 "event_deleted",
@@ -1937,22 +2754,52 @@ async function handleChat(
         });
     }
 
+
     /* =====================================================
        RESPUESTA GENERAL
        ===================================================== */
 
     return json({
-        type: "chat",
+        type:
+            "chat",
+
         response:
             `Te escucho. Entendí: "${message}". Todavía estoy aprendiendo a interpretar conversaciones más complejas, pero podemos seguir construyendo JAPY paso a paso. 🤖`,
     });
 }
+
 
 /* =========================================================
    FETCH PRINCIPAL
    ========================================================= */
 
 export default {
+    /* =====================================================
+       SCHEDULED / CRON
+       ===================================================== */
+
+    async scheduled(
+        controller,
+        env,
+        ctx
+    ) {
+        console.log(
+            "JAPY SCHEDULER:",
+            controller.cron,
+            new Date(
+                controller.scheduledTime
+            ).toISOString()
+        );
+
+        await processNotifications(
+            env
+        );
+    },
+
+    /* =====================================================
+       HTTP
+       ===================================================== */
+
     async fetch(
         request,
         env
@@ -1970,9 +2817,7 @@ export default {
                 "true",
         };
 
-        /* =================================================
-           OPTIONS
-           ================================================= */
+        /* OPTIONS */
 
         if (
             request.method ===
@@ -2092,7 +2937,9 @@ export default {
                         .bind(email)
                         .first();
 
-                if (existing) {
+                if (
+                    existing
+                ) {
                     return json(
                         {
                             error:
@@ -2398,7 +3245,9 @@ export default {
                     "japy_session"
                 );
 
-            if (sessionId) {
+            if (
+                sessionId
+            ) {
                 await env.japy_db
                     .prepare(
                         `
@@ -2406,7 +3255,9 @@ export default {
                         WHERE id = ?
                         `
                     )
-                    .bind(sessionId)
+                    .bind(
+                        sessionId
+                    )
                     .run();
             }
 
@@ -2475,18 +3326,16 @@ export default {
                         body
                     );
 
-                /*
-                 * handleChat devuelve normalmente
-                 * sus propios headers. Agregamos CORS.
-                 */
-
                 const newHeaders =
                     new Headers(
                         response.headers
                     );
 
                 for (
-                    const [key, value]
+                    const [
+                        key,
+                        value,
+                    ]
                     of Object.entries(
                         corsHeaders
                     )
@@ -2566,7 +3415,9 @@ export default {
                         ORDER BY date ASC, time ASC
                         `
                     )
-                    .bind(user.id)
+                    .bind(
+                        user.id
+                    )
                     .all();
 
             return json(
@@ -2676,57 +3527,29 @@ export default {
                     );
                 }
 
-                const eventId =
-                    uuidv4();
-
-                const createdAt =
-                    new Date().toISOString();
-
-                await env.japy_db
-                    .prepare(
-                        `
-                        INSERT INTO events (
-                            id,
-                            user_id,
-                            title,
-                            date,
-                            time,
-                            created_at
-                        )
-                        VALUES (?, ?, ?, ?, ?, ?)
-                        `
-                    )
-                    .bind(
-                        eventId,
+                const event =
+                    await createEvent(
                         user.id,
                         title,
                         date,
-                        time || null,
-                        createdAt
-                    )
-                    .run();
+                        time ||
+                            null,
+                        env,
+                        body.timezone ||
+                            "America/Santiago"
+                    );
 
                 return json(
                     {
                         success:
                             true,
 
-                        event: {
-                            id:
-                                eventId,
-
-                            title,
-
-                            date,
-
-                            time:
-                                time ||
-                                null,
-                        },
+                        event,
                     },
                     201,
                     corsHeaders
                 );
+
             } catch (error) {
                 console.error(
                     "CREATE EVENT ERROR:",
@@ -2821,6 +3644,18 @@ export default {
                 )
                 .run();
 
+            await env.japy_db
+                .prepare(
+                    `
+                    DELETE FROM notifications
+                    WHERE event_id = ?
+                    `
+                )
+                .bind(
+                    eventId
+                )
+                .run();
+
             return json(
                 {
                     success:
@@ -2838,7 +3673,9 @@ export default {
            ASSETS
            ================================================= */
 
-        if (env.ASSETS) {
+        if (
+            env.ASSETS
+        ) {
             return env.ASSETS.fetch(
                 request
             );
