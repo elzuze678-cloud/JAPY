@@ -1,33 +1,42 @@
 import { v4 as uuidv4 } from "uuid";
+import webpush from "web-push";
 
 /* =========================================================
    JAPY WEB
    Backend principal
    ========================================================= */
 
+const JAPY_TIME_ZONE = "America/Santiago";
+
+
 /* =========================================================
-   PROCESAR NOTIFICACIONES
+   PROCESAR Y ENVIAR NOTIFICACIONES
    ========================================================= */
 
 async function processNotifications(env) {
-    const now = new Date().toISOString();
+    const now =
+        new Date().toISOString();
 
     const result =
         await env.japy_db
             .prepare(
                 `
                 SELECT
-                    id,
-                    user_id,
-                    event_id,
-                    title,
-                    message,
-                    remind_at,
-                    status
-                FROM notifications
-                WHERE status = 'pending'
-                AND remind_at <= ?
-                ORDER BY remind_at ASC
+                    n.id,
+                    n.user_id,
+                    n.event_id,
+                    n.title,
+                    n.message,
+                    n.remind_at,
+                    n.status,
+                    e.date AS event_date,
+                    e.time AS event_time
+                FROM notifications n
+                LEFT JOIN events e
+                    ON e.id = n.event_id
+                WHERE n.status = 'pending'
+                AND n.remind_at <= ?
+                ORDER BY n.remind_at ASC
                 LIMIT 100
                 `
             )
@@ -44,72 +53,519 @@ async function processNotifications(env) {
 
         return {
             processed: 0,
-            notifications: [],
+            sent: 0,
+            failed: 0,
         };
     }
 
-    const processed = [];
+    if (
+        !env.VAPID_SUBJECT ||
+        !env.VAPID_PUBLIC_KEY ||
+        !env.VAPID_PRIVATE_KEY
+    ) {
+        console.error(
+            "JAPY PUSH: faltan credenciales VAPID."
+        );
 
-    for (const notification of notifications) {
+        return {
+            processed:
+                notifications.length,
+
+            sent: 0,
+
+            failed:
+                notifications.length,
+        };
+    }
+
+    webpush.setVapidDetails(
+        env.VAPID_SUBJECT,
+        env.VAPID_PUBLIC_KEY,
+        env.VAPID_PRIVATE_KEY
+    );
+
+    let sent = 0;
+    let failed = 0;
+
+    for (
+        const notification
+        of notifications
+    ) {
         try {
             /*
-             * Todavía no enviamos Push.
-             *
-             * READY significa que la notificación
-             * ya llegó a su momento y está preparada
-             * para el futuro sistema Push.
+             * Si el evento ya no existe, la notificación
+             * tampoco tiene utilidad.
              */
+
+            if (
+                !notification.event_date ||
+                !notification.event_time
+            ) {
+                await env.japy_db
+                    .prepare(
+                        `
+                        UPDATE notifications
+                        SET status = 'failed'
+                        WHERE id = ?
+                        AND status = 'pending'
+                        `
+                    )
+                    .bind(
+                        notification.id
+                    )
+                    .run();
+
+                failed++;
+
+                continue;
+            }
+
+            const eventUTC =
+                localDateTimeToUTC(
+                    notification.event_date,
+                    notification.event_time,
+                    JAPY_TIME_ZONE
+                );
+
+            const eventAtMs =
+                eventUTC.getTime();
+
+            const remindAtMs =
+                new Date(
+                    notification.remind_at
+                ).getTime();
+
+            const nowMs =
+                Date.now();
+
+            const remind15Ms =
+                eventAtMs -
+                15 * 60 * 1000;
+
+            /*
+             * Si el Scheduler llegó tarde y el evento
+             * ya comenzó, el recordatorio de 15 minutos
+             * ya no tiene sentido.
+             *
+             * El de 5 minutos y el de inicio sí pueden
+             * seguir enviándose si están pendientes.
+             */
+
+            if (
+                notification.title.startsWith(
+                    "Recordatorio:"
+                ) &&
+                remindAtMs === remind15Ms &&
+                nowMs >= eventAtMs
+            ) {
+                await env.japy_db
+                    .prepare(
+                        `
+                        UPDATE notifications
+                        SET status = 'skipped'
+                        WHERE id = ?
+                        AND status = 'pending'
+                        `
+                    )
+                    .bind(
+                        notification.id
+                    )
+                    .run();
+
+                console.log(
+                    "JAPY PUSH: recordatorio de 15 minutos omitido porque el evento ya comenzó:",
+                    notification.id
+                );
+
+                continue;
+            }
+
+            const subscriptionResult =
+                await env.japy_db
+                    .prepare(
+                        `
+                        SELECT
+                            id,
+                            endpoint,
+                            p256dh,
+                            auth
+                        FROM push_subscriptions
+                        WHERE user_id = ?
+                        `
+                    )
+                    .bind(
+                        notification.user_id
+                    )
+                    .all();
+
+            const subscriptions =
+                subscriptionResult.results ||
+                [];
+
+            if (!subscriptions.length) {
+                console.log(
+                    "JAPY PUSH: usuario sin suscripciones:",
+                    notification.user_id
+                );
+
+                await env.japy_db
+                    .prepare(
+                        `
+                        UPDATE notifications
+                        SET status = 'failed'
+                        WHERE id = ?
+                        AND status = 'pending'
+                        `
+                    )
+                    .bind(
+                        notification.id
+                    )
+                    .run();
+
+                /*
+                 * Si esta era la notificación de inicio,
+                 * el evento ya expiró igualmente. La
+                 * limpieza automática posterior lo eliminará.
+                 */
+
+                failed++;
+
+                continue;
+            }
+
+            let notificationSent =
+                false;
+
+            for (
+                const subscription
+                of subscriptions
+            ) {
+                const pushSubscription = {
+                    endpoint:
+                        subscription.endpoint,
+
+                    keys: {
+                        p256dh:
+                            subscription.p256dh,
+
+                        auth:
+                            subscription.auth,
+                    },
+                };
+
+                const payload =
+                    JSON.stringify({
+                        title:
+                            notification.title,
+
+                        message:
+                            notification.message,
+
+                        url:
+                            "/",
+
+                        tag:
+                            `japy-${notification.id}`,
+                    });
+
+                try {
+                    await webpush.sendNotification(
+                        pushSubscription,
+                        payload
+                    );
+
+                    notificationSent =
+                        true;
+
+                    console.log(
+                        "JAPY PUSH: enviado:",
+                        notification.title
+                    );
+
+                } catch (error) {
+                    console.error(
+                        "JAPY PUSH ERROR:",
+                        {
+                            statusCode:
+                                error?.statusCode,
+
+                            message:
+                                error?.message,
+
+                            body:
+                                error?.body,
+
+                            headers:
+                                error?.headers,
+                        }
+                    );
+
+                    if (
+                        error?.statusCode === 404 ||
+                        error?.statusCode === 410
+                    ) {
+                        await env.japy_db
+                            .prepare(
+                                `
+                                DELETE FROM push_subscriptions
+                                WHERE id = ?
+                                `
+                            )
+                            .bind(
+                                subscription.id
+                            )
+                            .run();
+
+                        console.log(
+                            "JAPY PUSH: suscripción inválida eliminada."
+                        );
+                    }
+                }
+            }
+
+            if (
+                notificationSent
+            ) {
+                await env.japy_db
+                    .prepare(
+                        `
+                        UPDATE notifications
+                        SET
+                            status = 'sent',
+                            sent_at = ?
+                        WHERE id = ?
+                        AND status = 'pending'
+                        `
+                    )
+                    .bind(
+                        new Date().toISOString(),
+                        notification.id
+                    )
+                    .run();
+
+                sent++;
+
+                /*
+                 * La notificación "JAPY:"
+                 * representa el inicio del evento.
+                 *
+                 * Después de procesarla, limpiamos
+                 * el evento y sus notificaciones pendientes.
+                 */
+
+                if (
+                    notification.title.startsWith(
+                        "JAPY:"
+                    )
+                ) {
+                    await env.japy_db
+                        .prepare(
+                            `
+                            DELETE FROM events
+                            WHERE id = ?
+                            `
+                        )
+                        .bind(
+                            notification.event_id
+                        )
+                        .run();
+
+                    await env.japy_db
+                        .prepare(
+                            `
+                            DELETE FROM notifications
+                            WHERE event_id = ?
+                            AND status = 'pending'
+                            `
+                        )
+                        .bind(
+                            notification.event_id
+                        )
+                        .run();
+
+                    console.log(
+                        "JAPY EVENTO: evento iniciado, finalizado y eliminado:",
+                        notification.event_id
+                    );
+                }
+
+                continue;
+            }
 
             await env.japy_db
                 .prepare(
                     `
                     UPDATE notifications
-                    SET status = 'ready'
+                    SET status = 'failed'
                     WHERE id = ?
                     AND status = 'pending'
                     `
                 )
-                .bind(notification.id)
+                .bind(
+                    notification.id
+                )
                 .run();
 
-            processed.push({
-                id:
-                    notification.id,
-
-                title:
-                    notification.title,
-
-                message:
-                    notification.message,
-
-                remind_at:
-                    notification.remind_at,
-
-                status:
-                    "ready",
-            });
-
-            console.log(
-                "JAPY SCHEDULER: notificación lista:",
-                notification.title
-            );
+            failed++;
 
         } catch (error) {
             console.error(
-                "JAPY SCHEDULER NOTIFICATION ERROR:",
+                "JAPY SCHEDULER ERROR:",
                 notification.id,
+                error
+            );
+
+            await env.japy_db
+                .prepare(
+                    `
+                    UPDATE notifications
+                    SET status = 'failed'
+                    WHERE id = ?
+                    AND status = 'pending'
+                    `
+                )
+                .bind(
+                    notification.id
+                )
+                .run();
+
+            failed++;
+        }
+    }
+
+    console.log(
+        "JAPY SCHEDULER:",
+        "procesadas =",
+        notifications.length,
+        "enviadas =",
+        sent,
+        "fallidas =",
+        failed
+    );
+
+    return {
+        processed:
+            notifications.length,
+
+        sent,
+
+        failed,
+    };
+}
+
+
+/* =========================================================
+   LIMPIAR EVENTOS YA FINALIZADOS
+   ========================================================= */
+
+async function cleanupExpiredEvents(env) {
+    const result =
+        await env.japy_db
+            .prepare(
+                `
+                SELECT
+                    id,
+                    title,
+                    date,
+                    time
+                FROM events
+                WHERE time IS NOT NULL
+                ORDER BY date ASC, time ASC
+                `
+            )
+            .all();
+
+    const events =
+        result.results || [];
+
+    if (!events.length) {
+        return 0;
+    }
+
+    const now =
+        Date.now();
+
+    let deleted = 0;
+
+    for (
+        const event
+        of events
+    ) {
+        try {
+            const eventUTC =
+                localDateTimeToUTC(
+                    event.date,
+                    event.time,
+                    JAPY_TIME_ZONE
+                );
+
+            if (
+                eventUTC.getTime() <=
+                now
+            ) {
+                await env.japy_db
+                    .prepare(
+                        `
+                        DELETE FROM events
+                        WHERE id = ?
+                        `
+                    )
+                    .bind(
+                        event.id
+                    )
+                    .run();
+
+                await env.japy_db
+                    .prepare(
+                        `
+                        DELETE FROM notifications
+                        WHERE event_id = ?
+                        `
+                    )
+                    .bind(
+                        event.id
+                    )
+                    .run();
+
+                deleted++;
+
+                console.log(
+                    "JAPY CLEANUP: evento expirado eliminado:",
+                    {
+                        id:
+                            event.id,
+
+                        title:
+                            event.title,
+
+                        date:
+                            event.date,
+
+                        time:
+                            event.time,
+                    }
+                );
+            }
+
+        } catch (error) {
+            console.error(
+                "JAPY CLEANUP ERROR:",
+                event.id,
                 error
             );
         }
     }
 
-    return {
-        processed:
-            processed.length,
+    if (
+        deleted
+    ) {
+        console.log(
+            "JAPY CLEANUP: eliminados =",
+            deleted
+        );
+    }
 
-        notifications:
-            processed,
-    };
+    return deleted;
 }
 
 
@@ -117,7 +573,11 @@ async function processNotifications(env) {
    UTILIDADES
    ========================================================= */
 
-function json(data, status = 200, headers = {}) {
+function json(
+    data,
+    status = 200,
+    headers = {}
+) {
     return new Response(
         JSON.stringify(data),
         {
@@ -146,6 +606,50 @@ function normalizeText(text) {
             " "
         )
         .trim();
+}
+
+
+/* =========================================================
+   ALIAS DE FECHAS / ERRORES COMUNES
+   ========================================================= */
+
+function normalizeDateAliases(text) {
+    let normalized =
+        normalizeText(text);
+
+    const dateAliases = {
+        hpy: "hoy",
+        oy: "hoy",
+        oi: "hoy",
+        hoi: "hoy",
+
+        manana: "manana",
+        maniana: "manana",
+
+        "pasao manana":
+            "pasado manana",
+    };
+
+    for (
+        const [
+            variant,
+            correct,
+        ]
+        of Object.entries(
+            dateAliases
+        )
+    ) {
+        normalized =
+            normalized.replace(
+                new RegExp(
+                    `\\b${variant}\\b`,
+                    "gi"
+                ),
+                correct
+            );
+    }
+
+    return normalized;
 }
 
 function getCookie(
@@ -230,11 +734,124 @@ async function verifyPassword(
 
 
 /* =========================================================
+   GOOGLE AUTHENTICATION
+   ========================================================= */
+
+const GOOGLE_CLIENT_ID =
+    "691280235308-vkkhussogkn6p8kfn0mc3fj3jt1kvclj.apps.googleusercontent.com";
+
+async function verifyGoogleCredential(
+    credential
+) {
+    if (
+        !credential ||
+        typeof credential !== "string"
+    ) {
+        return null;
+    }
+
+    try {
+        const response =
+            await fetch(
+                `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(
+                    credential
+                )}`
+            );
+
+        if (!response.ok) {
+            console.error(
+                "GOOGLE TOKEN ERROR:",
+                response.status
+            );
+
+            return null;
+        }
+
+        const data =
+            await response.json();
+
+        if (
+            data.aud !==
+            GOOGLE_CLIENT_ID
+        ) {
+            console.error(
+                "GOOGLE TOKEN ERROR: audience inválida."
+            );
+
+            return null;
+        }
+
+        if (
+            data.iss !==
+                "https://accounts.google.com" &&
+            data.iss !==
+                "accounts.google.com"
+        ) {
+            console.error(
+                "GOOGLE TOKEN ERROR: issuer inválido."
+            );
+
+            return null;
+        }
+
+        if (
+            data.email_verified !==
+                "true" &&
+            data.email_verified !==
+                true
+        ) {
+            console.error(
+                "GOOGLE TOKEN ERROR: correo no verificado."
+            );
+
+            return null;
+        }
+
+        if (
+            !data.sub ||
+            !data.email
+        ) {
+            return null;
+        }
+
+        return {
+            sub:
+                String(data.sub),
+
+            email:
+                String(data.email)
+                    .trim()
+                    .toLowerCase(),
+
+            name:
+                String(
+                    data.name ||
+                    data.given_name ||
+                    "Usuario"
+                ).trim(),
+
+            picture:
+                data.picture ||
+                null,
+        };
+
+    } catch (error) {
+        console.error(
+            "GOOGLE VERIFY ERROR:",
+            error
+        );
+
+        return null;
+    }
+}
+
+
+/* =========================================================
    FECHAS
    ========================================================= */
 
 function getLocalDateParts(
-    timeZone = "America/Santiago"
+    timeZone = JAPY_TIME_ZONE
 ) {
     let formatter;
 
@@ -261,7 +878,7 @@ function getLocalDateParts(
                 "en-CA",
                 {
                     timeZone:
-                        "America/Santiago",
+                        JAPY_TIME_ZONE,
 
                     year:
                         "numeric",
@@ -371,7 +988,7 @@ function addDays(
 }
 
 function getTomorrow(
-    timeZone = "America/Santiago"
+    timeZone = JAPY_TIME_ZONE
 ) {
     const today =
         getLocalDateParts(
@@ -405,7 +1022,7 @@ const WEEKDAYS = {
 
 function getDayOfWeekDate(
     dayName,
-    timeZone = "America/Santiago"
+    timeZone = JAPY_TIME_ZONE
 ) {
     const normalized =
         normalizeText(
@@ -471,17 +1088,31 @@ function getDayOfWeekDate(
 
 function parseDateFromText(
     text,
-    timeZone = "America/Santiago"
+    timeZone = JAPY_TIME_ZONE
 ) {
+    /*
+     * Normalizamos errores comunes:
+     *
+     * hpy  → hoy
+     * oy   → hoy
+     * oi   → hoy
+     * hoi  → hoy
+     *
+     * manana   → manana
+     * maniana  → manana
+     *
+     * pasao manana → pasado manana
+     */
+
     const normalized =
-        normalizeText(text);
+        normalizeDateAliases(
+            text
+        );
 
     const today =
         getLocalDateParts(
             timeZone
         );
-
-    /* HOY */
 
     if (
         /\bhoy\b/i.test(
@@ -494,8 +1125,6 @@ function parseDateFromText(
             today.day
         );
     }
-
-    /* PASADO MAÑANA */
 
     if (
         /\bpasado\s+manana\b/i.test(
@@ -517,8 +1146,6 @@ function parseDateFromText(
         );
     }
 
-    /* MAÑANA */
-
     if (
         /\bmanana\b/i.test(
             normalized
@@ -535,8 +1162,6 @@ function parseDateFromText(
             tomorrow.day
         );
     }
-
-    /* EN X DÍAS */
 
     const daysMatch =
         normalized.match(
@@ -565,8 +1190,6 @@ function parseDateFromText(
             date.day
         );
     }
-
-    /* FECHA NUMÉRICA */
 
     const dateMatch =
         normalized.match(
@@ -600,8 +1223,6 @@ function parseDateFromText(
         );
     }
 
-    /* DÍA DE LA SEMANA */
-
     const weekdayPattern =
         normalized.match(
             /\b(?:(?:el|este|proximo|próximo|siguiente|que\s+viene)\s+)?(domingo|lunes|martes|miercoles|miércoles|jueves|viernes|sabado|sábado)\b/i
@@ -615,8 +1236,6 @@ function parseDateFromText(
             timeZone
         );
     }
-
-    /* PRÓXIMA SEMANA */
 
     if (
         /\bproxima\s+semana\b/i.test(
@@ -649,7 +1268,7 @@ function parseDateFromText(
 
 
 /* =========================================================
-   REFERENCIAS
+   REFERENCIAS DE TIEMPO / FECHA
    ========================================================= */
 
 function isSameTimeReference(
@@ -746,6 +1365,112 @@ function parseTimeFromText(
         return null;
     }
 
+    /*
+     * Horas escritas con palabras.
+     *
+     * Ejemplos:
+     *
+     * a la una
+     * a las dos
+     * a las cinco
+     * a las siete de la tarde
+     */
+
+    const wordHours = {
+        una: 1,
+        uno: 1,
+
+        dos: 2,
+        tres: 3,
+        cuatro: 4,
+        cinco: 5,
+        seis: 6,
+        siete: 7,
+        ocho: 8,
+        nueve: 9,
+        diez: 10,
+        once: 11,
+        doce: 12,
+
+        trece: 13,
+        catorce: 14,
+        quince: 15,
+
+        dieciseis: 16,
+        dieciséis: 16,
+
+        diecisiete: 17,
+        dieciocho: 18,
+        diecinueve: 19,
+
+        veinte: 20,
+
+        veintiuno: 21,
+
+        veintidos: 22,
+        veintidós: 22,
+
+        veintitres: 23,
+        veintitrés: 23,
+    };
+
+    const wordMatch =
+        normalized.match(
+            /\b(?:a las|a la|las|a)\s+(una|uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce|trece|catorce|quince|dieciseis|dieciséis|diecisiete|dieciocho|diecinueve|veinte|veintiuno|veintidos|veintidós|veintitres|veintitrés)\b/i
+        );
+
+    if (
+        wordMatch
+    ) {
+        let hour =
+            wordHours[
+                normalizeText(
+                    wordMatch[1]
+                )
+            ];
+
+        const context =
+            normalized.slice(
+                wordMatch.index,
+                wordMatch.index +
+                    wordMatch[0].length +
+                    45
+            );
+
+        if (
+            /\bde\s+la\s+tarde\b/i.test(
+                context
+            ) ||
+            /\bde\s+la\s+noche\b/i.test(
+                context
+            )
+        ) {
+            if (
+                hour < 12
+            ) {
+                hour += 12;
+            }
+        }
+
+        if (
+            hour >= 0 &&
+            hour <= 23
+        ) {
+            return `${String(hour).padStart(2, "0")}:00`;
+        }
+    }
+
+
+    /*
+     * Horas numéricas.
+     *
+     * Ejemplos:
+     *
+     * a las 14
+     * a las 14:30
+     * a las 7 de la tarde
+     */
+
     const naturalMatch =
         normalized.match(
             /\b(?:a las|a la|las|a)\s+(\d{1,2})(?::(\d{2}))?\s*(?:horas|hora)?\b/i
@@ -799,6 +1524,14 @@ function parseTimeFromText(
         }
     }
 
+
+    /*
+     * Hora directa:
+     *
+     * 14:00
+     * 21:30
+     */
+
     const directMatch =
         normalized.match(
             /\b(\d{1,2}):(\d{2})\b/
@@ -838,34 +1571,72 @@ function parseTimeFromText(
 function extractEventTitle(
     text
 ) {
-    let title =
+    let source =
         String(text || "")
             .trim();
 
-    title =
-        title.replace(
-            /^(japy\s*)/i,
+    source =
+        source.replace(
+            /^(?:japy)\s*[,;:.-]?\s*/i,
             ""
         );
 
-    title =
-        title.replace(
-            /^(creame\s+(?:un|el)?\s*evento|créame\s+(?:un|el)?\s*evento|crea\s+(?:un|el)?\s*evento|crear\s+(?:un|el)?\s*evento)\s*/i,
-            ""
+    /*
+     * REGLA PRINCIPAL:
+     *
+     * Después de "evento", todo pertenece
+     * al título hasta encontrar el primer
+     * indicador temporal.
+     */
+
+    const eventMatch =
+        source.match(
+            /\bevento\b/i
         );
 
-    title =
-        title.replace(
-            /^(el\s+evento|un\s+evento|evento)\s*/i,
-            ""
-        );
+    if (
+        eventMatch
+    ) {
+        source =
+            source.substring(
+                eventMatch.index +
+                    eventMatch[0].length
+            ).trim();
+    } else {
+        source =
+            source.replace(
+                /^(?:creame|créame|crea|crear)\s+(?:un|el)?\s*/i,
+                ""
+            );
+
+        source =
+            source.replace(
+                /^(?:llamado|llamada|de\s+nombre)\s+/i,
+                ""
+            );
+    }
+
+
+    /*
+     * INDICADORES TEMPORALES
+     */
 
     const temporalPatterns = [
-        /\bpasado\s+mañana\b/i,
-        /\bpasado\s+manana\b/i,
 
-        /\bmañana\b/i,
-        /\bmanana\b/i,
+        /* Alias comunes de hoy */
+        /\b(?:hpy|oy|oi|hoi)\b/i,
+
+        /* Alias comunes de mañana */
+        /\b(?:manana|maniana)\b/i,
+
+        /* Alias de pasado mañana */
+        /\bpasao\s+(?:manana|mañana)\b/i,
+
+        /\bpasado\s+(?:manana|mañana)\b/i,
+
+        /* Horas escritas con palabras */
+        /\b(?:a las|a la|las|a)\s+(?:una|uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce|trece|catorce|quince|dieciseis|dieciséis|diecisiete|dieciocho|diecinueve|veinte|veintiuno|veintidos|veintidós|veintitres|veintitrés)\b/i,
+
         /\bhoy\b/i,
 
         /\b(?:el|este|próximo|proximo|siguiente|que\s+viene)\s+(?:lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo)\b/i,
@@ -888,7 +1659,7 @@ function extractEventTitle(
     ];
 
     let cutPosition =
-        title.length;
+        source.length;
 
     for (
         const pattern
@@ -896,7 +1667,7 @@ function extractEventTitle(
     ) {
         const match =
             pattern.exec(
-                title
+                source
             );
 
         if (
@@ -909,8 +1680,8 @@ function extractEventTitle(
         }
     }
 
-    title =
-        title
+    let title =
+        source
             .substring(
                 0,
                 cutPosition
@@ -920,6 +1691,18 @@ function extractEventTitle(
     title =
         title.replace(
             /\s+(?:para|el|al|a|en|de|del|este|la)$/i,
+            ""
+        );
+
+    title =
+        title.replace(
+            /^[,;:.-]+\s*/g,
+            ""
+        );
+
+    title =
+        title.replace(
+            /[\s,;:.-]+$/g,
             ""
         );
 
@@ -1011,7 +1794,7 @@ async function getAuthenticatedUser(
 
 
 /* =========================================================
-   CONTEXTO CONVERSACIONAL
+   CONTEXTO
    ========================================================= */
 
 async function getConversationContext(
@@ -1041,6 +1824,7 @@ async function getConversationContext(
         return JSON.parse(
             row.state
         );
+
     } catch (error) {
         console.error(
             "CONTEXT PARSE ERROR:",
@@ -1095,37 +1879,494 @@ async function clearConversationContext(
             WHERE user_id = ?
             `
         )
-        .bind(userId)
+        .bind(
+            userId
+        )
         .run();
 }
 
 
 /* =========================================================
-   FECHA/HORA LOCAL → UTC
+   REFERENCIAS A EVENTOS
+   ========================================================= */
+
+function tokenizeForEventMatch(
+    text
+) {
+    const stopWords =
+        new Set([
+            "el",
+            "la",
+            "los",
+            "las",
+            "un",
+            "una",
+            "unos",
+            "unas",
+            "de",
+            "del",
+            "para",
+            "por",
+            "que",
+            "era",
+            "es",
+            "evento",
+            "eventos",
+            "vi",
+            "ya",
+            "veo",
+            "este",
+            "esta",
+            "ese",
+            "esa",
+            "aquel",
+            "aquella",
+            "ahi",
+            "alli",
+            "me",
+            "lo",
+            "le",
+        ]);
+
+    return normalizeText(text)
+        .split(/\s+/)
+        .map((word) =>
+            word
+                .replace(
+                    /[^a-z0-9]/gi,
+                    ""
+                )
+                .trim()
+        )
+        .filter(
+            (word) =>
+                word.length >= 4 &&
+                !stopWords.has(word)
+        );
+}
+
+function scoreEventReference(
+    message,
+    eventTitle
+) {
+    const messageTokens =
+        tokenizeForEventMatch(
+            message
+        );
+
+    const titleTokens =
+        tokenizeForEventMatch(
+            eventTitle
+        );
+
+    if (
+        !messageTokens.length ||
+        !titleTokens.length
+    ) {
+        return 0;
+    }
+
+    let score = 0;
+
+    for (
+        const titleToken
+        of titleTokens
+    ) {
+        for (
+            const messageToken
+            of messageTokens
+        ) {
+            if (
+                messageToken ===
+                titleToken
+            ) {
+                score += 3;
+
+                continue;
+            }
+
+            const titleStem =
+                titleToken.slice(
+                    0,
+                    Math.min(
+                        5,
+                        titleToken.length
+                    )
+                );
+
+            const messageStem =
+                messageToken.slice(
+                    0,
+                    Math.min(
+                        5,
+                        messageToken.length
+                    )
+                );
+
+            if (
+                titleStem.length >= 4 &&
+                messageStem.length >= 4 &&
+                (
+                    titleStem ===
+                        messageStem ||
+                    titleToken.startsWith(
+                        messageStem
+                    ) ||
+                    messageToken.startsWith(
+                        titleStem
+                    )
+                )
+            ) {
+                score += 1;
+            }
+        }
+    }
+
+    return score;
+}
+
+function isGenericEventReference(
+    text
+) {
+    const normalized =
+        normalizeText(text);
+
+    return (
+        /\bese\s+evento\b/i.test(
+            normalized
+        ) ||
+
+        /\besa\s+evento\b/i.test(
+            normalized
+        ) ||
+
+        /\bel\s+evento\s+anterior\b/i.test(
+            normalized
+        ) ||
+
+        /\bla\s+anterior\b/i.test(
+            normalized
+        ) ||
+
+        /\bel\s+anterior\b/i.test(
+            normalized
+        ) ||
+
+        /\bese\s+de\s+ahi\b/i.test(
+            normalized
+        ) ||
+
+        normalized ===
+            "ese" ||
+
+        normalized ===
+            "esa" ||
+
+        normalized ===
+            "aquel" ||
+
+        normalized ===
+            "aquella"
+    );
+}
+
+function isEventPronounReference(
+    text
+) {
+    const normalized =
+        normalizeText(text);
+
+    return (
+        /^(?:lo|la|le)$/i.test(
+            normalized
+        ) ||
+
+        /^(?:cambialo|cambiala|modificalo|modificala|editalo|editala)$/i.test(
+            normalized
+        ) ||
+
+        /^(?:cancelalo|cancelala|eliminalo|eliminala|borrarlo|borrala|borralo|borrala)$/i.test(
+            normalized
+        )
+    );
+}
+
+async function findReferencedEvent(
+    userId,
+    message,
+    context,
+    env
+) {
+    const lastEvents =
+        Array.isArray(
+            context?.last_events
+        )
+            ? context.last_events
+            : [];
+
+    if (
+        lastEvents.length
+    ) {
+        let bestEvent =
+            null;
+
+        let bestScore =
+            0;
+
+        for (
+            const event
+            of lastEvents
+        ) {
+            const score =
+                scoreEventReference(
+                    message,
+                    event.title
+                );
+
+            if (
+                score >
+                bestScore
+            ) {
+                bestScore =
+                    score;
+
+                bestEvent =
+                    event;
+            }
+        }
+
+        if (
+            bestEvent &&
+            bestScore >= 2
+        ) {
+            return {
+                ...bestEvent,
+
+                matchScore:
+                    bestScore,
+            };
+        }
+
+        if (
+            (
+                isGenericEventReference(
+                    message
+                ) ||
+                isEventPronounReference(
+                    message
+                )
+            ) &&
+            lastEvents.length === 1
+        ) {
+            return {
+                ...lastEvents[0],
+
+                matchScore:
+                    1,
+            };
+        }
+    }
+
+    const result =
+        await env.japy_db
+            .prepare(
+                `
+                SELECT
+                    id,
+                    title,
+                    date,
+                    time
+                FROM events
+                WHERE user_id = ?
+                ORDER BY date ASC, time ASC
+                LIMIT 50
+                `
+            )
+            .bind(
+                userId
+            )
+            .all();
+
+    const events =
+        result.results || [];
+
+    let bestEvent =
+        null;
+
+    let bestScore =
+        0;
+
+    for (
+        const event
+        of events
+    ) {
+        const score =
+            scoreEventReference(
+                message,
+                event.title
+            );
+
+        if (
+            score >
+            bestScore
+        ) {
+            bestScore =
+                score;
+
+            bestEvent =
+                event;
+        }
+    }
+
+    if (
+        bestEvent &&
+        bestScore >= 3
+    ) {
+        return {
+            ...bestEvent,
+
+            matchScore:
+                bestScore,
+        };
+    }
+
+    return null;
+}
+
+
+/* =========================================================
+   RECORDAR ÚLTIMO EVENTO
+   ========================================================= */
+
+async function rememberLastEvent(
+    userId,
+    event,
+    env
+) {
+    if (!event) {
+        return;
+    }
+
+    await saveConversationContext(
+        userId,
+        {
+            flow:
+                "conversation",
+
+            last_intent:
+                "event_reference",
+
+            last_event: {
+                id:
+                    event.id,
+
+                title:
+                    event.title,
+
+                date:
+                    event.date,
+
+                time:
+                    event.time,
+            },
+
+            last_events: [
+                {
+                    id:
+                        event.id,
+
+                    title:
+                        event.title,
+
+                    date:
+                        event.date,
+
+                    time:
+                        event.time,
+                },
+            ],
+        },
+        env
+    );
+}
+
+
+/* =========================================================
+   LOCAL → UTC
    ========================================================= */
 
 function localDateTimeToUTC(
     date,
     time,
-    timeZone =
-        "America/Santiago"
+    timeZone = JAPY_TIME_ZONE
 ) {
-    const [
-        year,
-        month,
-        day,
-    ] =
-        date
-            .split("-")
-            .map(Number);
+    if (
+        !date ||
+        !time
+    ) {
+        throw new Error(
+            "Fecha u hora inválida."
+        );
+    }
 
-    const [
-        hour,
-        minute,
-    ] =
-        time
-            .split(":")
-            .map(Number);
+    const dateMatch =
+        String(date).match(
+            /^(\d{4})-(\d{2})-(\d{2})$/
+        );
+
+    const timeMatch =
+        String(time).match(
+            /^(\d{1,2}):(\d{2})$/
+        );
+
+    if (
+        !dateMatch ||
+        !timeMatch
+    ) {
+        throw new Error(
+            `Fecha/hora inválida: ${date} ${time}`
+        );
+    }
+
+    const year =
+        Number(
+            dateMatch[1]
+        );
+
+    const month =
+        Number(
+            dateMatch[2]
+        );
+
+    const day =
+        Number(
+            dateMatch[3]
+        );
+
+    const hour =
+        Number(
+            timeMatch[1]
+        );
+
+    const minute =
+        Number(
+            timeMatch[2]
+        );
+
+    if (
+        month < 1 ||
+        month > 12 ||
+        day < 1 ||
+        day > 31 ||
+        hour < 0 ||
+        hour > 23 ||
+        minute < 0 ||
+        minute > 59
+    ) {
+        throw new Error(
+            `Fecha/hora fuera de rango: ${date} ${time}`
+        );
+    }
 
     const initialUTC =
         Date.UTC(
@@ -1134,6 +2375,7 @@ function localDateTimeToUTC(
             day,
             hour,
             minute,
+            0,
             0
         );
 
@@ -1206,18 +2448,164 @@ function localDateTimeToUTC(
         displayedUTC -
         initialUTC;
 
-    const actualUTC =
-        initialUTC -
-        offset;
-
     return new Date(
-        actualUTC
+        initialUTC -
+            offset
     );
 }
 
 
 /* =========================================================
-   CREAR EVENTO + RECORDATORIO
+   CREAR LAS 3 NOTIFICACIONES
+   ========================================================= */
+
+async function createEventNotifications(
+    userId,
+    event,
+    env
+) {
+    if (
+        !event ||
+        !event.date ||
+        !event.time
+    ) {
+        return [];
+    }
+
+    const eventDateTime =
+        localDateTimeToUTC(
+            event.date,
+            event.time,
+            JAPY_TIME_ZONE
+        );
+
+    const eventAt =
+        eventDateTime;
+
+    const remind15 =
+        new Date(
+            eventAt.getTime() -
+                15 *
+                    60 *
+                    1000
+        );
+
+    const remind5 =
+        new Date(
+            eventAt.getTime() -
+                5 *
+                    60 *
+                    1000
+        );
+
+    const notifications = [
+        {
+            id:
+                uuidv4(),
+
+            remindAt:
+                remind15,
+
+            title:
+                `Recordatorio: ${event.title}`,
+
+            message:
+                `En 15 minutos tienes "${event.title}".`,
+        },
+
+        {
+            id:
+                uuidv4(),
+
+            remindAt:
+                remind5,
+
+            title:
+                `Recordatorio: ${event.title}`,
+
+            message:
+                `En 5 minutos tienes "${event.title}".`,
+        },
+
+        {
+            id:
+                uuidv4(),
+
+            remindAt:
+                eventAt,
+
+            title:
+                `JAPY: ${event.title}`,
+
+            message:
+                `El evento ya empezó: "${event.title}".`,
+        },
+    ];
+
+    const createdAt =
+        new Date().toISOString();
+
+    for (
+        const notification
+        of notifications
+    ) {
+        await env.japy_db
+            .prepare(
+                `
+                INSERT INTO notifications (
+                    id,
+                    user_id,
+                    event_id,
+                    remind_at,
+                    title,
+                    message,
+                    status,
+                    created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)
+                `
+            )
+            .bind(
+                notification.id,
+                userId,
+                event.id,
+                notification.remindAt.toISOString(),
+                notification.title,
+                notification.message,
+                createdAt
+            )
+            .run();
+    }
+
+    console.log(
+        "JAPY NOTIFICATIONS CREATED:",
+        {
+            event:
+                event.title,
+
+            eventLocal:
+                `${event.date} ${event.time}`,
+
+            eventUTC:
+                eventAt.toISOString(),
+
+            reminder15:
+                remind15.toISOString(),
+
+            reminder5:
+                remind5.toISOString(),
+
+            eventStart:
+                eventAt.toISOString(),
+        }
+    );
+
+    return notifications;
+}
+
+
+/* =========================================================
+   CREAR EVENTO
    ========================================================= */
 
 async function createEvent(
@@ -1225,19 +2613,13 @@ async function createEvent(
     title,
     date,
     time,
-    env,
-    timeZone =
-        "America/Santiago"
+    env
 ) {
     const eventId =
         uuidv4();
 
     const createdAt =
         new Date().toISOString();
-
-    /*
-     * Crear evento.
-     */
 
     await env.japy_db
         .prepare(
@@ -1263,78 +2645,30 @@ async function createEvent(
         )
         .run();
 
-    let notification =
-        null;
+    const event = {
+        id:
+            eventId,
 
-    /*
-     * Crear recordatorio 30 minutos antes.
-     */
+        title,
+
+        date,
+
+        time,
+    };
+
+    let notifications =
+        [];
 
     if (
         time
     ) {
         try {
-            const eventDateTime =
-                localDateTimeToUTC(
-                    date,
-                    time,
-                    timeZone
-                );
-
-            const remindAt =
-                new Date(
-                    eventDateTime.getTime() -
-                        30 *
-                            60 *
-                            1000
-                );
-
-            const notificationId =
-                uuidv4();
-
-            const notificationTitle =
-                `Recordatorio: ${title}`;
-
-            const notificationMessage =
-                `En 30 minutos tienes "${title}".`;
-
-            await env.japy_db
-                .prepare(
-                    `
-                    INSERT INTO notifications (
-                        id,
-                        user_id,
-                        event_id,
-                        remind_at,
-                        title,
-                        message,
-                        status,
-                        created_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)
-                    `
-                )
-                .bind(
-                    notificationId,
+            notifications =
+                await createEventNotifications(
                     userId,
-                    eventId,
-                    remindAt.toISOString(),
-                    notificationTitle,
-                    notificationMessage,
-                    createdAt
-                )
-                .run();
-
-            notification = {
-                id:
-                    notificationId,
-
-                remind_at:
-                    remindAt.toISOString(),
-
-                status:
-                    "pending",
-            };
+                    event,
+                    env
+                );
 
         } catch (error) {
             console.error(
@@ -1345,16 +2679,9 @@ async function createEvent(
     }
 
     return {
-        id:
-            eventId,
+        ...event,
 
-        title,
-
-        date,
-
-        time,
-
-        notification,
+        notifications,
     };
 }
 
@@ -1419,10 +2746,6 @@ async function editEvent(
         )
         .run();
 
-    /*
-     * Eliminar recordatorios anteriores.
-     */
-
     await env.japy_db
         .prepare(
             `
@@ -1452,7 +2775,7 @@ async function editEvent(
 
 
 /* =========================================================
-   BÚSQUEDA INTELIGENTE DE EVENTOS
+   BUSCAR EVENTO
    ========================================================= */
 
 async function findEventByTitle(
@@ -1471,10 +2794,6 @@ async function findEventByTitle(
     if (!cleanTitle) {
         return null;
     }
-
-    /*
-     * Exacto.
-     */
 
     const exact =
         await env.japy_db
@@ -1501,22 +2820,7 @@ async function findEventByTitle(
         return exact;
     }
 
-    /*
-     * Parcial.
-     *
-     * Ejemplo:
-     * "skate" -> "andar en skate"
-     */
-
-    const normalizedTitle =
-        cleanTitle
-            .toLowerCase()
-            .replace(
-                /[%_]/g,
-                " "
-            );
-
-    const partial =
+    const result =
         await env.japy_db
             .prepare(
                 `
@@ -1527,31 +2831,95 @@ async function findEventByTitle(
                     time
                 FROM events
                 WHERE user_id = ?
-                AND (
-                    LOWER(title) LIKE ?
-                    OR LOWER(?) LIKE '%' || LOWER(title) || '%'
-                )
-                ORDER BY
-                    date ASC,
-                    time ASC
-                LIMIT 2
+                ORDER BY date ASC, time ASC
+                LIMIT 100
                 `
             )
             .bind(
-                userId,
-                `%${normalizedTitle}%`,
-                normalizedTitle
+                userId
             )
             .all();
 
-    const matches =
-        partial.results ||
-        [];
+    const events =
+        result.results || [];
+
+    const normalizedSearch =
+        normalizeText(
+            cleanTitle
+        );
+
+    for (
+        const event
+        of events
+    ) {
+        if (
+            normalizeText(
+                event.title
+            ) ===
+            normalizedSearch
+        ) {
+            return event;
+        }
+    }
+
+    const containsMatches =
+        events.filter(
+            (event) => {
+                const normalizedTitle =
+                    normalizeText(
+                        event.title
+                    );
+
+                return (
+                    normalizedTitle.includes(
+                        normalizedSearch
+                    ) ||
+                    normalizedSearch.includes(
+                        normalizedTitle
+                    )
+                );
+            }
+        );
 
     if (
-        matches.length === 1
+        containsMatches.length === 1
     ) {
-        return matches[0];
+        return containsMatches[0];
+    }
+
+    let bestEvent =
+        null;
+
+    let bestScore =
+        0;
+
+    for (
+        const event
+        of events
+    ) {
+        const score =
+            scoreEventReference(
+                cleanTitle,
+                event.title
+            );
+
+        if (
+            score >
+            bestScore
+        ) {
+            bestScore =
+                score;
+
+            bestEvent =
+                event;
+        }
+    }
+
+    if (
+        bestEvent &&
+        bestScore >= 3
+    ) {
+        return bestEvent;
     }
 
     return null;
@@ -1572,17 +2940,13 @@ async function continueCreateEventConversation(
     const dateFromMessage =
         parseDateFromText(
             message,
-            timeZone
+            JAPY_TIME_ZONE
         );
 
     const timeFromMessage =
         parseTimeFromText(
             message
         );
-
-    /*
-     * ESPERANDO TÍTULO
-     */
 
     if (
         context.awaiting ===
@@ -1659,10 +3023,6 @@ async function continueCreateEventConversation(
         }
     }
 
-    /*
-     * ESPERANDO FECHA
-     */
-
     if (
         context.awaiting ===
         "date"
@@ -1707,10 +3067,6 @@ async function continueCreateEventConversation(
         }
     }
 
-    /*
-     * ESPERANDO HORA
-     */
-
     if (
         context.awaiting ===
         "time"
@@ -1731,14 +3087,10 @@ async function continueCreateEventConversation(
                     "chat",
 
                 response:
-                    "Necesito la hora. Por ejemplo: “15:00” o “a las 15”.",
+                    "Necesito la hora. Por ejemplo: “15:00”, “a las 15” o “a las tres”.",
             });
         }
     }
-
-    /*
-     * COMPLETO
-     */
 
     if (
         context.title &&
@@ -1751,12 +3103,17 @@ async function continueCreateEventConversation(
                 context.title,
                 context.date,
                 context.time,
-                env,
-                timeZone
+                env
             );
 
         await clearConversationContext(
             user.id,
+            env
+        );
+
+        await rememberLastEvent(
+            user.id,
+            event,
             env
         );
 
@@ -1801,7 +3158,7 @@ async function continueEditEventConversation(
     const dateFromMessage =
         parseDateFromText(
             message,
-            timeZone
+            JAPY_TIME_ZONE
         );
 
     const timeFromMessage =
@@ -1819,10 +3176,6 @@ async function continueEditEventConversation(
             message
         );
 
-    /*
-     * Misma hora.
-     */
-
     if (
         sameTime &&
         context.originalTime
@@ -1830,10 +3183,6 @@ async function continueEditEventConversation(
         context.time =
             context.originalTime;
     }
-
-    /*
-     * Misma fecha.
-     */
 
     if (
         sameDate &&
@@ -1898,55 +3247,15 @@ async function continueEditEventConversation(
         });
     }
 
-    /*
-     * Recrear recordatorio.
-     */
-
     if (
         event.time
     ) {
         try {
-            const eventDateTime =
-                localDateTimeToUTC(
-                    event.date,
-                    event.time,
-                    timeZone
-                );
-
-            const remindAt =
-                new Date(
-                    eventDateTime.getTime() -
-                        30 *
-                            60 *
-                            1000
-                );
-
-            await env.japy_db
-                .prepare(
-                    `
-                    INSERT INTO notifications (
-                        id,
-                        user_id,
-                        event_id,
-                        remind_at,
-                        title,
-                        message,
-                        status,
-                        created_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)
-                    `
-                )
-                .bind(
-                    uuidv4(),
-                    user.id,
-                    event.id,
-                    remindAt.toISOString(),
-                    `Recordatorio: ${event.title}`,
-                    `En 30 minutos tienes "${event.title}".`,
-                    new Date().toISOString()
-                )
-                .run();
+            await createEventNotifications(
+                user.id,
+                event,
+                env
+            );
 
         } catch (error) {
             console.error(
@@ -1956,8 +3265,9 @@ async function continueEditEventConversation(
         }
     }
 
-    await clearConversationContext(
+    await rememberLastEvent(
         user.id,
+        event,
         env
     );
 
@@ -1979,7 +3289,7 @@ async function continueEditEventConversation(
 
 
 /* =========================================================
-   CHAT PRINCIPAL
+   CHAT
    ========================================================= */
 
 async function handleChat(
@@ -1993,9 +3303,11 @@ async function handleChat(
             body?.message || ""
         ).trim();
 
+    /*
+     * JAPY SIEMPRE usa Santiago.
+     */
     const timeZone =
-        body?.timezone ||
-        "America/Santiago";
+        JAPY_TIME_ZONE;
 
     if (!message) {
         return json(
@@ -2012,32 +3324,40 @@ async function handleChat(
             message
         );
 
-    /*
-     * CONTEXTO
-     */
-
     const existingContext =
         await getConversationContext(
             user.id,
             env
         );
 
+
+    /* =====================================================
+       INTENCIONES EXPLÍCITAS DE ALTA PRIORIDAD
+       ===================================================== */
+
+    const isDeleteCommand =
+        /^(?:japy\s+)?(?:cancela|cancelar|elimina|eliminar|borra|borrar)\b/i.test(
+            normalized
+        );
+
+    const isEditCommandNow =
+        /^(?:japy\s+)?(?:cambia|cambiar|modifica|modificar|edita|editar|actualiza|actualizar)\b/i.test(
+            normalized
+        );
+
+
+    /* =====================================================
+       CANCELAR OPERACIÓN ACTUAL
+       ===================================================== */
+
     if (
         existingContext
     ) {
-        /*
-         * Cancelar flujo.
-         */
-
         if (
-            normalized ===
-                "cancelar" ||
-            normalized ===
-                "cancela" ||
-            normalized ===
-                "olvidalo" ||
-            normalized ===
-                "olvidelo"
+            normalized === "cancelar" ||
+            normalized === "cancela" ||
+            normalized === "olvidalo" ||
+            normalized === "olvidelo"
         ) {
             await clearConversationContext(
                 user.id,
@@ -2053,13 +3373,11 @@ async function handleChat(
             });
         }
 
-        /*
-         * Crear
-         */
-
         if (
             existingContext.flow ===
-                "create_event"
+                "create_event" &&
+            !isDeleteCommand &&
+            !isEditCommandNow
         ) {
             return continueCreateEventConversation(
                 message,
@@ -2070,13 +3388,10 @@ async function handleChat(
             );
         }
 
-        /*
-         * Editar
-         */
-
         if (
             existingContext.flow ===
-                "edit_event"
+                "edit_event" &&
+            !isDeleteCommand
         ) {
             return continueEditEventConversation(
                 message,
@@ -2096,9 +3411,7 @@ async function handleChat(
     if (
         normalized === "hola" ||
         normalized === "hola japy" ||
-        normalized.startsWith(
-            "hola "
-        )
+        normalized.startsWith("hola ")
     ) {
         return json({
             type:
@@ -2115,12 +3428,9 @@ async function handleChat(
        ===================================================== */
 
     if (
-        normalized ===
-            "gracias" ||
-        normalized ===
-            "muchas gracias" ||
-        normalized ===
-            "gracias japy"
+        normalized === "gracias" ||
+        normalized === "muchas gracias" ||
+        normalized === "gracias japy"
     ) {
         return json({
             type:
@@ -2137,15 +3447,9 @@ async function handleChat(
        ===================================================== */
 
     if (
-        normalized.includes(
-            "quien eres"
-        ) ||
-        normalized.includes(
-            "que eres"
-        ) ||
-        normalized.includes(
-            "quien es japy"
-        )
+        normalized.includes("quien eres") ||
+        normalized.includes("que eres") ||
+        normalized.includes("quien es japy")
     ) {
         return json({
             type:
@@ -2162,24 +3466,11 @@ async function handleChat(
        ===================================================== */
 
     if (
-        normalized.includes(
-            "mis eventos"
-        ) ||
-        normalized.includes(
-            "muestra mis eventos"
-        ) ||
-        normalized.includes(
-            "mostrar mis eventos"
-        ) ||
-        normalized.includes(
-            "ver mis eventos"
-        ) ||
-        normalized.includes(
-            "que tengo"
-        ) ||
-        normalized.includes(
-            "qué tengo"
-        )
+        normalized.includes("mis eventos") ||
+        normalized.includes("muestra mis eventos") ||
+        normalized.includes("mostrar mis eventos") ||
+        normalized.includes("ver mis eventos") ||
+        normalized.includes("que tengo")
     ) {
         const result =
             await env.japy_db
@@ -2201,17 +3492,85 @@ async function handleChat(
                 )
                 .all();
 
+        const events =
+            result.results || [];
+
+        await saveConversationContext(
+            user.id,
+            {
+                flow:
+                    "conversation",
+
+                last_intent:
+                    "list_events",
+
+                last_events:
+                    events
+                        .slice(
+                            0,
+                            10
+                        )
+                        .map(
+                            (event) => ({
+                                id:
+                                    event.id,
+
+                                title:
+                                    event.title,
+
+                                date:
+                                    event.date,
+
+                                time:
+                                    event.time,
+                            })
+                        ),
+
+                last_event:
+                    events.length === 1
+                        ? {
+                              id:
+                                  events[0].id,
+
+                              title:
+                                  events[0].title,
+
+                              date:
+                                  events[0].date,
+
+                              time:
+                                  events[0].time,
+                          }
+                        : null,
+            },
+            env
+        );
+
+        const spokenEvents =
+            events
+                .slice(
+                    0,
+                    10
+                )
+                .map(
+                    (event) =>
+                        event.time
+                            ? `${event.title}, el ${event.date} a las ${event.time}`
+                            : `${event.title}, el ${event.date}`
+                )
+                .join(
+                    ". "
+                );
+
         return json({
             type:
                 "events",
 
-            events:
-                result.results ||
-                [],
+            events,
 
             response:
-                result.results?.length
-                    ? "Estos son tus próximos eventos:"
+                events.length
+                    ? `Estos son tus próximos eventos: ${spokenEvents}.`
                     : "No tienes eventos guardados todavía.",
         });
     }
@@ -2237,7 +3596,7 @@ async function handleChat(
         const date =
             parseDateFromText(
                 message,
-                timeZone
+                JAPY_TIME_ZONE
             );
 
         const time =
@@ -2262,10 +3621,6 @@ async function handleChat(
                 null,
         };
 
-        /*
-         * Falta título.
-         */
-
         if (!context.title) {
             context.awaiting =
                 "title";
@@ -2284,10 +3639,6 @@ async function handleChat(
                     "Claro. ¿Qué evento quieres crear?",
             });
         }
-
-        /*
-         * Falta fecha.
-         */
 
         if (!context.date) {
             context.awaiting =
@@ -2308,10 +3659,6 @@ async function handleChat(
             });
         }
 
-        /*
-         * Falta hora.
-         */
-
         if (!context.time) {
             context.awaiting =
                 "time";
@@ -2331,22 +3678,23 @@ async function handleChat(
             });
         }
 
-        /*
-         * Crear completo.
-         */
-
         const event =
             await createEvent(
                 user.id,
                 context.title,
                 context.date,
                 context.time,
-                env,
-                timeZone
+                env
             );
 
         await clearConversationContext(
             user.id,
+            env
+        );
+
+        await rememberLastEvent(
+            user.id,
+            event,
             env
         );
 
@@ -2367,7 +3715,7 @@ async function handleChat(
        ===================================================== */
 
     const editCommand =
-        /^(cambia|cambiar|modifica|modificar|edita|editar|actualiza|actualizar)\b/i.test(
+        /^(?:japy\s+)?(?:cambia|cambiar|modifica|modificar|edita|editar|actualiza|actualizar)\b/i.test(
             normalized
         );
 
@@ -2399,14 +3747,18 @@ async function handleChat(
             searchTitle.length;
 
         const temporalPatterns = [
-            /\bpasado\s+mañana\b/i,
-            /\bpasado\s+manana\b/i,
+            /* Alias de fechas */
+            /\b(?:hpy|oy|oi|hoi)\b/i,
 
-            /\bmañana\b/i,
-            /\bmanana\b/i,
+            /\b(?:manana|maniana)\b/i,
+
+            /\bpasao\s+(?:manana|mañana)\b/i,
+
+            /\bpasado\s+(?:manana|mañana)\b/i,
+
             /\bhoy\b/i,
 
-            /\b(?:el|este|próximo|proximo|siguiente)\s+(?:lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo)\b/i,
+            /\b(?:el|este|proximo|próximo|siguiente)\s+(?:lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo)\b/i,
 
             /\b(?:lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo)\b/i,
 
@@ -2460,22 +3812,50 @@ async function handleChat(
                 )
                 .trim();
 
-        if (!searchTitle) {
-            return json({
-                type:
-                    "chat",
+        let event =
+            null;
 
-                response:
-                    "Claro. ¿Qué evento quieres modificar?",
-            });
+        if (
+            searchTitle &&
+            !isEventPronounReference(
+                searchTitle
+            ) &&
+            !isGenericEventReference(
+                searchTitle
+            )
+        ) {
+            event =
+                await findEventByTitle(
+                    user.id,
+                    searchTitle,
+                    env
+                );
         }
 
-        const event =
-            await findEventByTitle(
-                user.id,
-                searchTitle,
-                env
-            );
+        if (
+            !event &&
+            existingContext?.last_event
+        ) {
+            event =
+                await findEventByTitle(
+                    user.id,
+                    existingContext.last_event.title,
+                    env
+                );
+        }
+
+        if (
+            !event &&
+            searchTitle
+        ) {
+            event =
+                await findReferencedEvent(
+                    user.id,
+                    searchTitle,
+                    existingContext,
+                    env
+                );
+        }
 
         if (!event) {
             return json({
@@ -2483,7 +3863,9 @@ async function handleChat(
                     "chat",
 
                 response:
-                    `No encontré un evento llamado "${searchTitle}".`,
+                    searchTitle
+                        ? `No encontré un evento llamado "${searchTitle}".`
+                        : "Claro. ¿Qué evento quieres modificar?",
             });
         }
 
@@ -2500,7 +3882,7 @@ async function handleChat(
         let newDate =
             parseDateFromText(
                 message,
-                timeZone
+                JAPY_TIME_ZONE
             );
 
         let newTime =
@@ -2518,10 +3900,6 @@ async function handleChat(
                 event.time;
         }
 
-        /*
-         * Cambio directo.
-         */
-
         if (
             newDate ||
             newTime
@@ -2535,55 +3913,15 @@ async function handleChat(
                     env
                 );
 
-            /*
-             * Crear nuevo recordatorio.
-             */
-
             if (
                 updatedEvent.time
             ) {
                 try {
-                    const eventDateTime =
-                        localDateTimeToUTC(
-                            updatedEvent.date,
-                            updatedEvent.time,
-                            timeZone
-                        );
-
-                    const remindAt =
-                        new Date(
-                            eventDateTime.getTime() -
-                                30 *
-                                    60 *
-                                    1000
-                        );
-
-                    await env.japy_db
-                        .prepare(
-                            `
-                            INSERT INTO notifications (
-                                id,
-                                user_id,
-                                event_id,
-                                remind_at,
-                                title,
-                                message,
-                                status,
-                                created_at
-                            )
-                            VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)
-                            `
-                        )
-                        .bind(
-                            uuidv4(),
-                            user.id,
-                            updatedEvent.id,
-                            remindAt.toISOString(),
-                            `Recordatorio: ${updatedEvent.title}`,
-                            `En 30 minutos tienes "${updatedEvent.title}".`,
-                            new Date().toISOString()
-                        )
-                        .run();
+                    await createEventNotifications(
+                        user.id,
+                        updatedEvent,
+                        env
+                    );
 
                 } catch (error) {
                     console.error(
@@ -2592,6 +3930,12 @@ async function handleChat(
                     );
                 }
             }
+
+            await rememberLastEvent(
+                user.id,
+                updatedEvent,
+                env
+            );
 
             return json({
                 type:
@@ -2609,10 +3953,6 @@ async function handleChat(
                     updatedEvent,
             });
         }
-
-        /*
-         * Guardar contexto.
-         */
 
         const context = {
             flow:
@@ -2657,11 +3997,11 @@ async function handleChat(
 
 
     /* =====================================================
-       CANCELAR EVENTO
+       CANCELAR / ELIMINAR EVENTO
        ===================================================== */
 
     const cancelCommand =
-        /^(cancela|cancelar|elimina|eliminar|borra|borrar)\b/i.test(
+        /^(?:japy\s+)?(?:cancela|cancelar|elimina|eliminar|borra|borrar)\b/i.test(
             normalized
         );
 
@@ -2692,22 +4032,59 @@ async function handleChat(
         title =
             title.trim();
 
-        if (!title) {
-            return json({
-                type:
-                    "chat",
+        let event =
+            null;
 
-                response:
-                    "Claro. ¿Qué evento quieres cancelar?",
-            });
+        if (
+            existingContext?.last_event &&
+            (
+                !title ||
+                isGenericEventReference(
+                    title
+                ) ||
+                isEventPronounReference(
+                    title
+                )
+            )
+        ) {
+            event =
+                await findEventByTitle(
+                    user.id,
+                    existingContext.last_event.title,
+                    env
+                );
         }
 
-        const event =
-            await findEventByTitle(
-                user.id,
-                title,
-                env
-            );
+        if (
+            !event &&
+            title &&
+            !isGenericEventReference(
+                title
+            ) &&
+            !isEventPronounReference(
+                title
+            )
+        ) {
+            event =
+                await findEventByTitle(
+                    user.id,
+                    title,
+                    env
+                );
+        }
+
+        if (
+            !event &&
+            title
+        ) {
+            event =
+                await findReferencedEvent(
+                    user.id,
+                    title,
+                    existingContext,
+                    env
+                );
+        }
 
         if (!event) {
             return json({
@@ -2715,7 +4092,9 @@ async function handleChat(
                     "chat",
 
                 response:
-                    `No encontré un evento llamado "${title}".`,
+                    title
+                        ? `No encontré un evento llamado "${title}".`
+                        : "Claro. ¿Qué evento quieres cancelar?",
             });
         }
 
@@ -2745,6 +4124,24 @@ async function handleChat(
             )
             .run();
 
+        await saveConversationContext(
+            user.id,
+            {
+                flow:
+                    "conversation",
+
+                last_intent:
+                    "event_deleted",
+
+                last_event:
+                    null,
+
+                last_events:
+                    [],
+            },
+            env
+        );
+
         return json({
             type:
                 "event_deleted",
@@ -2752,6 +4149,65 @@ async function handleChat(
             response:
                 `Listo. Cancelé el evento "${event.title}". 🗑️`,
         });
+    }
+
+
+    /* =====================================================
+       REFERENCIA DE CONVERSACIÓN
+       ===================================================== */
+
+    if (
+        existingContext &&
+        existingContext.flow ===
+            "conversation"
+    ) {
+        const referencedEvent =
+            await findReferencedEvent(
+                user.id,
+                message,
+                existingContext,
+                env
+            );
+
+        if (
+            referencedEvent
+        ) {
+            await saveConversationContext(
+                user.id,
+                {
+                    ...existingContext,
+
+                    flow:
+                        "conversation",
+
+                    last_intent:
+                        "event_reference",
+
+                    last_event: {
+                        id:
+                            referencedEvent.id,
+
+                        title:
+                            referencedEvent.title,
+
+                        date:
+                            referencedEvent.date,
+
+                        time:
+                            referencedEvent.time,
+                    },
+                },
+                env
+            );
+
+            return json({
+                type:
+                    "chat",
+
+                response:
+                    `Sí, entiendo que te refieres a "${referencedEvent.title}". ¿Qué quieres hacer con ese evento?`,
+            });
+        }
     }
 
 
@@ -2764,7 +4220,7 @@ async function handleChat(
             "chat",
 
         response:
-            `Te escucho. Entendí: "${message}". Todavía estoy aprendiendo a interpretar conversaciones más complejas, pero podemos seguir construyendo JAPY paso a paso. 🤖`,
+            "Te escucho. ¿Qué quieres hacer?",
     });
 }
 
@@ -2774,6 +4230,7 @@ async function handleChat(
    ========================================================= */
 
 export default {
+
     /* =====================================================
        SCHEDULED / CRON
        ===================================================== */
@@ -2791,10 +4248,25 @@ export default {
             ).toISOString()
         );
 
+        /*
+         * Primero procesamos las notificaciones.
+         */
         await processNotifications(
             env
         );
+
+        /*
+         * Después limpiamos eventos cuyo tiempo
+         * de inicio ya pasó.
+         *
+         * Esto funciona incluso si el evento no
+         * tenía notificaciones.
+         */
+        await cleanupExpiredEvents(
+            env
+        );
     },
+
 
     /* =====================================================
        HTTP
@@ -2817,7 +4289,10 @@ export default {
                 "true",
         };
 
-        /* OPTIONS */
+
+        /* =================================================
+           OPTIONS
+           ================================================= */
 
         if (
             request.method ===
@@ -2826,7 +4301,8 @@ export default {
             return new Response(
                 null,
                 {
-                    status: 204,
+                    status:
+                        204,
 
                     headers: {
                         ...corsHeaders,
@@ -2840,6 +4316,7 @@ export default {
                 }
             );
         }
+
 
         /* =================================================
            HEALTH
@@ -2863,6 +4340,7 @@ export default {
                 corsHeaders
             );
         }
+
 
         /* =================================================
            REGISTRO
@@ -2994,6 +4472,7 @@ export default {
                     201,
                     corsHeaders
                 );
+
             } catch (error) {
                 console.error(
                     "REGISTER ERROR:",
@@ -3011,8 +4490,265 @@ export default {
             }
         }
 
+
         /* =================================================
-           LOGIN
+           LOGIN CON GOOGLE
+           ================================================= */
+
+        if (
+            url.pathname ===
+                "/api/auth/google" &&
+            request.method ===
+                "POST"
+        ) {
+            try {
+                const body =
+                    await request.json();
+
+                const credential =
+                    String(
+                        body?.credential ||
+                        ""
+                    ).trim();
+
+                if (!credential) {
+                    return json(
+                        {
+                            error:
+                                "No se recibió la credencial de Google.",
+                        },
+                        400,
+                        corsHeaders
+                    );
+                }
+
+                const googleUser =
+                    await verifyGoogleCredential(
+                        credential
+                    );
+
+                if (!googleUser) {
+                    return json(
+                        {
+                            error:
+                                "La autenticación de Google no es válida.",
+                        },
+                        401,
+                        corsHeaders
+                    );
+                }
+
+                let user =
+                    await env.japy_db
+                        .prepare(
+                            `
+                            SELECT
+                                id,
+                                email,
+                                name,
+                                google_sub
+                            FROM users
+                            WHERE google_sub = ?
+                            LIMIT 1
+                            `
+                        )
+                        .bind(
+                            googleUser.sub
+                        )
+                        .first();
+
+                if (!user) {
+                    user =
+                        await env.japy_db
+                            .prepare(
+                                `
+                                SELECT
+                                    id,
+                                    email,
+                                    name,
+                                    google_sub
+                                FROM users
+                                WHERE LOWER(email) = LOWER(?)
+                                LIMIT 1
+                                `
+                            )
+                            .bind(
+                                googleUser.email
+                            )
+                            .first();
+
+                    if (user) {
+                        await env.japy_db
+                            .prepare(
+                                `
+                                UPDATE users
+                                SET
+                                    google_sub = ?,
+                                    name = ?
+                                WHERE id = ?
+                                `
+                            )
+                            .bind(
+                                googleUser.sub,
+                                googleUser.name,
+                                user.id
+                            )
+                            .run();
+
+                        user = {
+                            ...user,
+
+                            name:
+                                googleUser.name,
+
+                            google_sub:
+                                googleUser.sub,
+                        };
+
+                    } else {
+                        const userId =
+                            uuidv4();
+
+                        const createdAt =
+                            new Date().toISOString();
+
+                        const placeholderPassword =
+                            `google-${uuidv4()}`;
+
+                        const passwordHash =
+                            await hashPassword(
+                                placeholderPassword
+                            );
+
+                        await env.japy_db
+                            .prepare(
+                                `
+                                INSERT INTO users (
+                                    id,
+                                    email,
+                                    password_hash,
+                                    name,
+                                    created_at,
+                                    google_sub
+                                )
+                                VALUES (?, ?, ?, ?, ?, ?)
+                                `
+                            )
+                            .bind(
+                                userId,
+                                googleUser.email,
+                                passwordHash,
+                                googleUser.name,
+                                createdAt,
+                                googleUser.sub
+                            )
+                            .run();
+
+                        user = {
+                            id:
+                                userId,
+
+                            email:
+                                googleUser.email,
+
+                            name:
+                                googleUser.name,
+
+                            google_sub:
+                                googleUser.sub,
+                        };
+                    }
+                }
+
+                const sessionId =
+                    uuidv4();
+
+                const expiresAt =
+                    new Date(
+                        Date.now() +
+                            7 *
+                                24 *
+                                60 *
+                                60 *
+                                1000
+                    ).toISOString();
+
+                await env.japy_db
+                    .prepare(
+                        `
+                        INSERT INTO sessions (
+                            id,
+                            user_id,
+                            expires_at,
+                            created_at
+                        )
+                        VALUES (?, ?, ?, ?)
+                        `
+                    )
+                    .bind(
+                        sessionId,
+                        user.id,
+                        expiresAt,
+                        new Date().toISOString()
+                    )
+                    .run();
+
+                const secure =
+                    url.protocol ===
+                    "https:"
+                        ? "Secure; "
+                        : "";
+
+                return json(
+                    {
+                        success:
+                            true,
+
+                        user: {
+                            id:
+                                user.id,
+
+                            name:
+                                user.name,
+
+                            email:
+                                user.email,
+                        },
+                    },
+                    200,
+                    {
+                        ...corsHeaders,
+
+                        "Set-Cookie":
+                            `japy_session=${sessionId}; ` +
+                            `HttpOnly; ` +
+                            secure +
+                            `SameSite=Lax; ` +
+                            `Path=/; ` +
+                            `Max-Age=604800`,
+                    }
+                );
+
+            } catch (error) {
+                console.error(
+                    "GOOGLE LOGIN ERROR:",
+                    error
+                );
+
+                return json(
+                    {
+                        error:
+                            "No se pudo iniciar sesión con Google.",
+                    },
+                    500,
+                    corsHeaders
+                );
+            }
+        }
+
+
+        /* =================================================
+           LOGIN TRADICIONAL
            ================================================= */
 
         if (
@@ -3164,6 +4900,7 @@ export default {
                             `Max-Age=604800`,
                     }
                 );
+
             } catch (error) {
                 console.error(
                     "LOGIN ERROR:",
@@ -3180,6 +4917,7 @@ export default {
                 );
             }
         }
+
 
         /* =================================================
            ME
@@ -3228,6 +4966,7 @@ export default {
                 corsHeaders
             );
         }
+
 
         /* =================================================
            LOGOUT
@@ -3286,6 +5025,425 @@ export default {
                 }
             );
         }
+
+
+        /* =================================================
+           PUSH - CLAVE PÚBLICA
+           ================================================= */
+
+        if (
+            url.pathname ===
+                "/api/push/public-key" &&
+            request.method ===
+                "GET"
+        ) {
+            const user =
+                await getAuthenticatedUser(
+                    request,
+                    env
+                );
+
+            if (!user) {
+                return json(
+                    {
+                        error:
+                            "No estás autenticado.",
+                    },
+                    401,
+                    corsHeaders
+                );
+            }
+
+            if (
+                !env.VAPID_PUBLIC_KEY
+            ) {
+                return json(
+                    {
+                        error:
+                            "La clave pública VAPID no está configurada.",
+                    },
+                    500,
+                    corsHeaders
+                );
+            }
+
+            return json(
+                {
+                    publicKey:
+                        env.VAPID_PUBLIC_KEY,
+                },
+                200,
+                corsHeaders
+            );
+        }
+
+
+        /* =================================================
+           PUSH - SUSCRIPCIÓN
+           ================================================= */
+
+        if (
+            url.pathname ===
+                "/api/push/subscribe" &&
+            request.method ===
+                "POST"
+        ) {
+            try {
+                const user =
+                    await getAuthenticatedUser(
+                        request,
+                        env
+                    );
+
+                if (!user) {
+                    return json(
+                        {
+                            error:
+                                "No estás autenticado.",
+                        },
+                        401,
+                        corsHeaders
+                    );
+                }
+
+                const body =
+                    await request.json();
+
+                const subscription =
+                    body?.subscription;
+
+                if (
+                    !subscription ||
+                    !subscription.endpoint ||
+                    !subscription.keys ||
+                    !subscription.keys.p256dh ||
+                    !subscription.keys.auth
+                ) {
+                    return json(
+                        {
+                            error:
+                                "La suscripción Push no es válida.",
+                        },
+                        400,
+                        corsHeaders
+                    );
+                }
+
+                const now =
+                    new Date().toISOString();
+
+                const existing =
+                    await env.japy_db
+                        .prepare(
+                            `
+                            SELECT
+                                id
+                            FROM push_subscriptions
+                            WHERE endpoint = ?
+                            `
+                        )
+                        .bind(
+                            subscription.endpoint
+                        )
+                        .first();
+
+                if (
+                    existing
+                ) {
+                    await env.japy_db
+                        .prepare(
+                            `
+                            UPDATE push_subscriptions
+                            SET
+                                user_id = ?,
+                                p256dh = ?,
+                                auth = ?,
+                                updated_at = ?
+                            WHERE endpoint = ?
+                            `
+                        )
+                        .bind(
+                            user.id,
+                            subscription.keys.p256dh,
+                            subscription.keys.auth,
+                            now,
+                            subscription.endpoint
+                        )
+                        .run();
+
+                } else {
+                    await env.japy_db
+                        .prepare(
+                            `
+                            INSERT INTO push_subscriptions (
+                                id,
+                                user_id,
+                                endpoint,
+                                p256dh,
+                                auth,
+                                created_at,
+                                updated_at
+                            )
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                            `
+                        )
+                        .bind(
+                            uuidv4(),
+                            user.id,
+                            subscription.endpoint,
+                            subscription.keys.p256dh,
+                            subscription.keys.auth,
+                            now,
+                            now
+                        )
+                        .run();
+                }
+
+                console.log(
+                    "JAPY PUSH: suscripción guardada para",
+                    user.email
+                );
+
+                return json(
+                    {
+                        success:
+                            true,
+
+                        message:
+                            "Notificaciones activadas correctamente.",
+                    },
+                    200,
+                    corsHeaders
+                );
+
+            } catch (error) {
+                console.error(
+                    "PUSH SUBSCRIBE ERROR:",
+                    error
+                );
+
+                return json(
+                    {
+                        error:
+                            "No se pudo guardar la suscripción Push.",
+                    },
+                    500,
+                    corsHeaders
+                );
+            }
+        }
+
+
+        /* =================================================
+           PUSH - PRUEBA MANUAL
+           ================================================= */
+
+        if (
+            url.pathname ===
+                "/api/push/test" &&
+            request.method ===
+                "POST"
+        ) {
+            try {
+                const user =
+                    await getAuthenticatedUser(
+                        request,
+                        env
+                    );
+
+                if (!user) {
+                    return json(
+                        {
+                            error:
+                                "No estás autenticado.",
+                        },
+                        401,
+                        corsHeaders
+                    );
+                }
+
+                if (
+                    !env.VAPID_SUBJECT ||
+                    !env.VAPID_PUBLIC_KEY ||
+                    !env.VAPID_PRIVATE_KEY
+                ) {
+                    return json(
+                        {
+                            error:
+                                "Las claves VAPID no están configuradas.",
+                        },
+                        500,
+                        corsHeaders
+                    );
+                }
+
+                const result =
+                    await env.japy_db
+                        .prepare(
+                            `
+                            SELECT
+                                id,
+                                endpoint,
+                                p256dh,
+                                auth
+                            FROM push_subscriptions
+                            WHERE user_id = ?
+                            `
+                        )
+                        .bind(
+                            user.id
+                        )
+                        .all();
+
+                const subscriptions =
+                    result.results || [];
+
+                if (
+                    !subscriptions.length
+                ) {
+                    return json(
+                        {
+                            error:
+                                "No tienes ninguna suscripción Push registrada.",
+                        },
+                        404,
+                        corsHeaders
+                    );
+                }
+
+                webpush.setVapidDetails(
+                    env.VAPID_SUBJECT,
+                    env.VAPID_PUBLIC_KEY,
+                    env.VAPID_PRIVATE_KEY
+                );
+
+                const payload =
+                    JSON.stringify({
+                        title:
+                            "JAPY",
+
+                        message:
+                            "¡Las notificaciones Push funcionan! 🔔",
+
+                        url:
+                            "/",
+
+                        tag:
+                            `japy-test-${Date.now()}`,
+                    });
+
+                let sent = 0;
+
+                for (
+                    const subscription
+                    of subscriptions
+                ) {
+                    try {
+                        await webpush.sendNotification(
+                            {
+                                endpoint:
+                                    subscription.endpoint,
+
+                                keys: {
+                                    p256dh:
+                                        subscription.p256dh,
+
+                                    auth:
+                                        subscription.auth,
+                                },
+                            },
+                            payload
+                        );
+
+                        sent++;
+
+                        console.log(
+                            "JAPY PUSH TEST: enviado."
+                        );
+
+                    } catch (error) {
+                        console.error(
+                            "JAPY PUSH TEST ERROR:",
+                            {
+                                statusCode:
+                                    error?.statusCode,
+
+                                message:
+                                    error?.message,
+
+                                body:
+                                    error?.body,
+
+                                headers:
+                                    error?.headers,
+                            }
+                        );
+
+                        if (
+                            error?.statusCode ===
+                                404 ||
+                            error?.statusCode ===
+                                410
+                        ) {
+                            await env.japy_db
+                                .prepare(
+                                    `
+                                    DELETE FROM push_subscriptions
+                                    WHERE id = ?
+                                    `
+                                )
+                                .bind(
+                                    subscription.id
+                                )
+                                .run();
+                        }
+                    }
+                }
+
+                if (
+                    sent === 0
+                ) {
+                    return json(
+                        {
+                            success:
+                                false,
+
+                            error:
+                                "No se pudo enviar el Push.",
+                        },
+                        500,
+                        corsHeaders
+                    );
+                }
+
+                return json(
+                    {
+                        success:
+                            true,
+
+                        sent,
+                    },
+                    200,
+                    corsHeaders
+                );
+
+            } catch (error) {
+                console.error(
+                    "PUSH TEST ERROR:",
+                    error
+                );
+
+                return json(
+                    {
+                        error:
+                            "Error enviando Push de prueba.",
+                    },
+                    500,
+                    corsHeaders
+                );
+            }
+        }
+
 
         /* =================================================
            CHAT
@@ -3356,6 +5514,7 @@ export default {
                             newHeaders,
                     }
                 );
+
             } catch (error) {
                 console.error(
                     "CHAT ERROR:",
@@ -3372,6 +5531,7 @@ export default {
                 );
             }
         }
+
 
         /* =================================================
            OBTENER EVENTOS
@@ -3430,6 +5590,7 @@ export default {
                 corsHeaders
             );
         }
+
 
         /* =================================================
            CREAR EVENTO DIRECTAMENTE
@@ -3534,10 +5695,14 @@ export default {
                         date,
                         time ||
                             null,
-                        env,
-                        body.timezone ||
-                            "America/Santiago"
+                        env
                     );
+
+                await rememberLastEvent(
+                    user.id,
+                    event,
+                    env
+                );
 
                 return json(
                     {
@@ -3566,6 +5731,7 @@ export default {
                 );
             }
         }
+
 
         /* =================================================
            ELIMINAR EVENTO
@@ -3669,6 +5835,7 @@ export default {
             );
         }
 
+
         /* =================================================
            ASSETS
            ================================================= */
@@ -3680,6 +5847,7 @@ export default {
                 request
             );
         }
+
 
         /* =================================================
            404

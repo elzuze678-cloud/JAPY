@@ -12,5 +12,9 @@
     "@cloudflare/vitest-plugin": "^1.0.0",
     "vitest": "~4.1.0",
     "wrangler": "^4.127.1"
+  },
+  "dependencies": {
+    "uuid": "^14.0.2",
+    "web-push": "^3.6.7"
   }
 }
